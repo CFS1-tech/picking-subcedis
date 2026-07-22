@@ -1,0 +1,270 @@
+"""
+Capa de acceso a datos usando Google Sheets (en vez de SQLite),
+para que el pedido, los escaneos y el historial se guarden de forma
+permanente aunque Streamlit Cloud reinicie el contenedor.
+
+Usa credenciales OAuth de USUARIO (no service account), porque muchas
+organizaciones de Google Workspace bloquean la creación/descarga de
+claves de service account. El refresh_token se genera UNA sola vez de
+forma local con oauth_get_refresh_token.py y luego se guarda en
+st.secrets (o en .streamlit/secrets.toml) para que la app lo reutilice
+sin volver a abrir el navegador.
+
+Mantiene exactamente la misma interfaz que db.py para que app.py no
+tenga que cambiar su lógica, solo el import.
+"""
+import json
+from datetime import datetime
+
+import gspread
+import pandas as pd
+import streamlit as st
+from google.oauth2.credentials import Credentials
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+PEDIDO_HEADERS = ["week_tag", "tienda", "nombre_tienda", "codigo", "cantidad_solicitada", "fecha_carga"]
+SCANS_HEADERS = ["week_tag", "tienda", "codigo", "cantidad_escaneada", "cantidad_devuelta", "ultima_actualizacion"]
+HISTORIAL_HEADERS = [
+    "week_tag", "tienda", "fecha_cierre",
+    "solicitado_total", "tenido_total", "faltante_total", "devuelto_total", "detalle_json",
+]
+
+
+def _get_credentials():
+    """Arma credenciales OAuth de usuario a partir de client_id/secret/refresh_token
+    guardados en st.secrets['gcp_oauth']."""
+    cfg = st.secrets["gcp_oauth"]
+    creds = Credentials(
+        token=None,
+        refresh_token=cfg["refresh_token"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=cfg["client_id"],
+        client_secret=cfg["client_secret"],
+        scopes=SCOPES,
+    )
+    return creds
+
+
+@st.cache_resource(show_spinner=False)
+def _get_client():
+    creds = _get_credentials()
+    return gspread.authorize(creds)
+
+
+@st.cache_resource(show_spinner=False)
+def _get_spreadsheet():
+    client = _get_client()
+    sheet_id = st.secrets["gcp_oauth"]["spreadsheet_id"]
+    return client.open_by_key(sheet_id)
+
+
+def _ensure_worksheet(sh, title, headers):
+    try:
+        ws = sh.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=title, rows=1000, cols=len(headers) + 2)
+        ws.append_row(headers)
+        return ws
+    existing_headers = ws.row_values(1)
+    if existing_headers != headers:
+        if not existing_headers:
+            ws.append_row(headers)
+    return ws
+
+
+def init_db():
+    """Equivalente a db.init_db(): asegura que existan las 3 pestañas con encabezados.
+    Devuelve el objeto Spreadsheet (se pasa como 'conn' al resto de funciones)."""
+    sh = _get_spreadsheet()
+    _ensure_worksheet(sh, "pedido_items", PEDIDO_HEADERS)
+    _ensure_worksheet(sh, "scans", SCANS_HEADERS)
+    _ensure_worksheet(sh, "historial", HISTORIAL_HEADERS)
+    return sh
+
+
+def _records_df(ws, headers):
+    values = ws.get_all_records(expected_headers=headers)
+    if not values:
+        return pd.DataFrame(columns=headers)
+    return pd.DataFrame(values)
+
+
+def _write_df(ws, df, headers):
+    ws.clear()
+    ws.append_row(headers)
+    if not df.empty:
+        rows = df[headers].fillna("").values.tolist()
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+
+
+# ------------------------------------------------------------------
+# pedido_items
+# ------------------------------------------------------------------
+def replace_pedido(conn, week_tag, df):
+    sh = conn
+    ws = sh.worksheet("pedido_items")
+    current = _records_df(ws, PEDIDO_HEADERS)
+    if not current.empty:
+        current = current[current["week_tag"].astype(str) != str(week_tag)]
+
+    now = datetime.now().isoformat(timespec="seconds")
+    new_rows = df.copy()
+    new_rows["week_tag"] = week_tag
+    new_rows["fecha_carga"] = now
+    new_rows = new_rows[PEDIDO_HEADERS]
+
+    result = pd.concat([current, new_rows], ignore_index=True)
+    _write_df(ws, result, PEDIDO_HEADERS)
+
+    # limpia también los escaneos previos de esa semana (pedido nuevo = escaneos reiniciados)
+    scans_ws = sh.worksheet("scans")
+    scans_df = _records_df(scans_ws, SCANS_HEADERS)
+    if not scans_df.empty:
+        scans_df = scans_df[scans_df["week_tag"].astype(str) != str(week_tag)]
+        _write_df(scans_ws, scans_df, SCANS_HEADERS)
+
+
+def list_week_tags(conn):
+    ws = conn.worksheet("pedido_items")
+    df = _records_df(ws, PEDIDO_HEADERS)
+    if df.empty:
+        return []
+    return sorted(df["week_tag"].astype(str).unique(), reverse=True)
+
+
+def list_tiendas(conn, week_tag):
+    ws = conn.worksheet("pedido_items")
+    df = _records_df(ws, PEDIDO_HEADERS)
+    if df.empty:
+        return []
+    df = df[df["week_tag"].astype(str) == str(week_tag)]
+    pares = df[["tienda", "nombre_tienda"]].drop_duplicates().sort_values("tienda")
+    return list(pares.itertuples(index=False, name=None))
+
+
+def get_pedido_tienda(conn, week_tag, tienda):
+    ws = conn.worksheet("pedido_items")
+    df = _records_df(ws, PEDIDO_HEADERS)
+    if df.empty:
+        return {}
+    df = df[(df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))]
+    return {str(r["codigo"]): float(r["cantidad_solicitada"]) for _, r in df.iterrows()}
+
+
+# ------------------------------------------------------------------
+# scans
+# ------------------------------------------------------------------
+def get_scans_tienda(conn, week_tag, tienda):
+    ws = conn.worksheet("scans")
+    df = _records_df(ws, SCANS_HEADERS)
+    if df.empty:
+        return {}
+    df = df[(df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))]
+    out = {}
+    for _, r in df.iterrows():
+        out[str(r["codigo"])] = {
+            "escaneado": float(r["cantidad_escaneada"] or 0),
+            "devuelto": float(r["cantidad_devuelta"] or 0),
+        }
+    return out
+
+
+def register_scan(conn, week_tag, tienda, codigo, solicitado_map):
+    """Registra un escaneo directamente sobre la hoja 'scans'."""
+    ws = conn.worksheet("scans")
+    df = _records_df(ws, SCANS_HEADERS)
+
+    pertenece = codigo in solicitado_map
+    solicitado = solicitado_map.get(codigo, 0)
+
+    if not pertenece:
+        return {"estado": "no_pertenece", "solicitado": 0, "escaneado_total": 0, "devuelto_total": 0}
+
+    mask = (
+        (df["week_tag"].astype(str) == str(week_tag))
+        & (df["tienda"].astype(str) == str(tienda))
+        & (df["codigo"].astype(str) == str(codigo))
+        if not df.empty
+        else pd.Series([], dtype=bool)
+    )
+
+    if not df.empty and mask.any():
+        idx = df.index[mask][0]
+        escaneado_prev = float(df.at[idx, "cantidad_escaneada"] or 0)
+        devuelto_prev = float(df.at[idx, "cantidad_devuelta"] or 0)
+    else:
+        idx = None
+        escaneado_prev = 0
+        devuelto_prev = 0
+
+    if escaneado_prev + 1 > solicitado:
+        estado = "excedente"
+        nuevo_escaneado = escaneado_prev
+        nuevo_devuelto = devuelto_prev + 1
+    else:
+        estado = "ok"
+        nuevo_escaneado = escaneado_prev + 1
+        nuevo_devuelto = devuelto_prev
+
+    now = datetime.now().isoformat(timespec="seconds")
+
+    if idx is not None:
+        # fila existe: actualizamos solo esa fila (row = idx+2 por encabezado)
+        row_number = idx + 2
+        ws.update(
+            f"A{row_number}:F{row_number}",
+            [[week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now]],
+            value_input_option="USER_ENTERED",
+        )
+    else:
+        ws.append_row(
+            [week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now],
+            value_input_option="USER_ENTERED",
+        )
+
+    return {
+        "estado": estado,
+        "solicitado": solicitado,
+        "escaneado_total": nuevo_escaneado,
+        "devuelto_total": nuevo_devuelto,
+    }
+
+
+# ------------------------------------------------------------------
+# historial
+# ------------------------------------------------------------------
+def guardar_historial(conn, week_tag, tienda, resumen_rows):
+    ws = conn.worksheet("historial")
+    solicitado_total = sum(r["solicitado"] for r in resumen_rows)
+    tenido_total = sum(r["tenido"] for r in resumen_rows)
+    faltante_total = sum(r["falta"] for r in resumen_rows)
+    devuelto_total = sum(r["devuelto"] for r in resumen_rows)
+
+    ws.append_row(
+        [
+            week_tag,
+            tienda,
+            datetime.now().isoformat(timespec="seconds"),
+            solicitado_total,
+            tenido_total,
+            faltante_total,
+            devuelto_total,
+            json.dumps(resumen_rows, ensure_ascii=False),
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
+
+def get_historial(conn, week_tag=None, tienda=None):
+    ws = conn.worksheet("historial")
+    df = _records_df(ws, HISTORIAL_HEADERS)
+    if df.empty:
+        return []
+    if week_tag:
+        df = df[df["week_tag"].astype(str) == str(week_tag)]
+    if tienda:
+        df = df[df["tienda"].astype(str) == str(tienda)]
+    df = df.sort_values("fecha_cierre", ascending=False)
+    cols = HISTORIAL_HEADERS[:-1]  # sin detalle_json, igual que db.get_historial
+    return list(df[cols].itertuples(index=False, name=None))
