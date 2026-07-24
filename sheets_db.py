@@ -99,8 +99,13 @@ def init_db():
     return sh
 
 
-def _records_df(ws, headers):
-    values = ws.get_all_records(expected_headers=headers)
+def _records_df(ws, headers, numericise_ignore=None):
+    """numericise_ignore: índices de columna (1-based) que NO se deben
+    convertir a número al leer. gspread por defecto intenta convertir
+    cualquier celda que "parezca" número (ej. '001' -> 1), incluso si en la
+    hoja el texto se ve bien — por eso hay que excluir explícitamente las
+    columnas de códigos/ids que pueden tener ceros a la izquierda."""
+    values = ws.get_all_records(expected_headers=headers, numericise_ignore=numericise_ignore or [])
     if not values:
         return pd.DataFrame(columns=headers)
     return pd.DataFrame(values)
@@ -147,7 +152,8 @@ def _write_df(ws, df, headers, columnas_texto=None):
 @st.cache_data(ttl=120, show_spinner=False)
 def _pedido_df_cached(_conn, cache_key):
     ws = _conn.worksheet("pedido_items")
-    return _records_df(ws, PEDIDO_HEADERS)
+    # tienda(2) y codigo(4): no numericé, para no perder ceros a la izquierda
+    return _records_df(ws, PEDIDO_HEADERS, numericise_ignore=[2, 4])
 
 
 def replace_pedido(conn, week_tag, df):
@@ -200,7 +206,12 @@ def guardar_pedido_detalle(conn, week_tag, detalle_df):
 
 def get_pedido_detalle(conn, week_tag):
     ws = conn.worksheet("pedido_detalle")
-    df = _records_df(ws, PEDIDO_DETALLE_HEADERS)
+    # índices (1-based) de columnas que NO deben convertirse a número al leer,
+    # para no perder ceros a la izquierda en id_cabecera, id_linea,
+    # codigo_departamento, codigo_color, codigo, cabecera_original,
+    # articulo_original, cod y color.
+    ignorar_numerico = [2, 3, 4, 6, 7, 10, 11, 12, 13]
+    df = _records_df(ws, PEDIDO_DETALLE_HEADERS, numericise_ignore=ignorar_numerico)
     if df.empty:
         return df
     df = df[df["week_tag"].astype(str) == str(week_tag)].drop(columns=["week_tag"]).reset_index(drop=True)
