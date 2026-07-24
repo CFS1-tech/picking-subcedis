@@ -20,6 +20,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 from google.oauth2.credentials import Credentials
+from openpyxl.utils import get_column_letter
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -105,9 +106,30 @@ def _records_df(ws, headers):
     return pd.DataFrame(values)
 
 
-def _write_df(ws, df, headers):
+def _forzar_formato_texto(ws, headers, columnas_texto, num_filas):
+    """Fuerza formato TEXTO en columnas que deben preservar ceros a la
+    izquierda (codigo, cod, color, etc.). No basta con mandar value_input_option
+    RAW si la columna quedó con formato numérico de un guardado anterior:
+    Sheets sigue mostrando el valor sin los ceros. Hay que fijar el formato
+    de la columna a TEXTO antes de escribir los valores nuevos."""
+    if num_filas <= 0:
+        return
+    for col_name in columnas_texto:
+        if col_name not in headers:
+            continue
+        col_idx = headers.index(col_name) + 1
+        col_letter = get_column_letter(col_idx)
+        try:
+            ws.format(f"{col_letter}1:{col_letter}{num_filas + 1}", {"numberFormat": {"type": "TEXT"}})
+        except Exception:
+            pass  # si falla el formateo no debe romper el guardado de datos
+
+
+def _write_df(ws, df, headers, columnas_texto=None):
     ws.clear()
     ws.append_row(headers)
+    if columnas_texto:
+        _forzar_formato_texto(ws, headers, columnas_texto, len(df))
     if not df.empty:
         rows = df[headers].fillna("").values.tolist()
         # RAW (no USER_ENTERED): evita que Sheets "interprete" texto como
@@ -142,7 +164,7 @@ def replace_pedido(conn, week_tag, df):
     new_rows = new_rows[PEDIDO_HEADERS]
 
     result = pd.concat([current, new_rows], ignore_index=True)
-    _write_df(ws, result, PEDIDO_HEADERS)
+    _write_df(ws, result, PEDIDO_HEADERS, columnas_texto=["tienda", "codigo"])
 
     # limpia también los escaneos previos de esa semana (pedido nuevo = escaneos reiniciados)
     scans_ws = sh.worksheet("scans")
@@ -167,7 +189,13 @@ def guardar_pedido_detalle(conn, week_tag, detalle_df):
     new_rows = new_rows[PEDIDO_DETALLE_HEADERS]
 
     result = pd.concat([current, new_rows], ignore_index=True)
-    _write_df(ws, result, PEDIDO_DETALLE_HEADERS)
+    _write_df(
+        ws, result, PEDIDO_DETALLE_HEADERS,
+        columnas_texto=[
+            "id_cabecera", "id_linea", "codigo_departamento", "codigo_color",
+            "codigo", "cabecera_original", "articulo_original", "cod", "color",
+        ],
+    )
 
 
 def get_pedido_detalle(conn, week_tag):
