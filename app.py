@@ -16,6 +16,39 @@ import report
 
 st.set_page_config(page_title="Picking Subcedis", layout="wide")
 
+# Estilos para que la pantalla de escaneo (operario) sea grande y clara.
+st.markdown(
+    """
+    <style>
+    div[data-testid="stForm"] input {
+        font-size: 1.6rem !important;
+        padding: 0.9rem !important;
+        text-align: center;
+    }
+    div[data-testid="stForm"] button {
+        font-size: 1.3rem !important;
+        padding: 0.7rem 1.2rem !important;
+        width: 100%;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 2.1rem !important;
+    }
+    .tienda-activa-header {
+        background-color: #0f2f5c;
+        color: white;
+        padding: 1rem 1.4rem;
+        border-radius: 10px;
+        margin-bottom: 1rem;
+    }
+    .tienda-activa-header h2 {
+        color: white;
+        margin: 0;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Persistencia: Google Sheets si hay credenciales configuradas en secrets,
 # si no, cae automáticamente a SQLite local (útil para pruebas rápidas).
 if "gcp_oauth" in st.secrets:
@@ -76,36 +109,128 @@ with tab1:
                 for key in list(st.session_state.keys()):
                     if key.startswith(f"scans_cache_{week_tag}_"):
                         del st.session_state[key]
-                csv_df = pk.generar_csv_wms(consolidado, fecha_emision, fecha_entrega)
-                csv_bytes = csv_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+                st.session_state["pedido_guardado_week"] = week_tag
+                st.session_state["pedido_guardado_consolidado"] = consolidado
+                st.session_state["pedido_guardado_fecha_emision"] = fecha_emision
+                st.session_state["pedido_guardado_fecha_entrega"] = fecha_entrega
+                st.success(f"Pedido de la semana {week_tag} guardado.")
 
-                st.session_state["last_csv_bytes"] = csv_bytes
-                st.session_state["last_csv_name"] = f"consolidado_wms_{week_tag}.csv"
-                st.success(f"Pedido de la semana {week_tag} guardado. Ya puedes descargar el CSV.")
+            # ------------------------------------------------------------
+            # Filtro de tiendas para el CSV descargable (por nombre_departamento)
+            # ------------------------------------------------------------
+            if st.session_state.get("pedido_guardado_week") == week_tag:
+                st.markdown("---")
+                st.markdown("#### Filtrar tiendas para el CSV a descargar")
 
-            if "last_csv_bytes" in st.session_state:
-                st.download_button(
-                    "Descargar CSV para WMS",
-                    data=st.session_state["last_csv_bytes"],
-                    file_name=st.session_state["last_csv_name"],
-                    mime="text/csv",
+                cons_guardado = st.session_state["pedido_guardado_consolidado"]
+                pares_tienda_nombre = (
+                    cons_guardado[["tienda", "nombre_tienda"]]
+                    .drop_duplicates()
+                    .sort_values("tienda")
+                    .itertuples(index=False, name=None)
+                )
+                pares_tienda_nombre = list(pares_tienda_nombre)
+
+                def _marcar_todas():
+                    valor = st.session_state["chk_todas_tiendas"]
+                    for t, _n in pares_tienda_nombre:
+                        st.session_state[f"chk_tienda_{week_tag}_{t}"] = valor
+
+                st.checkbox(
+                    "Seleccionar todas las tiendas",
+                    value=True,
+                    key="chk_todas_tiendas",
+                    on_change=_marcar_todas,
                 )
 
+                cols = st.columns(3)
+                tiendas_seleccionadas = []
+                for i, (t, nombre_tienda) in enumerate(pares_tienda_nombre):
+                    chk_key = f"chk_tienda_{week_tag}_{t}"
+                    if chk_key not in st.session_state:
+                        st.session_state[chk_key] = True
+                    with cols[i % 3]:
+                        marcado = st.checkbox(nombre_tienda, key=chk_key)
+                    if marcado:
+                        tiendas_seleccionadas.append(t)
+
+                if st.button("Generar CSV filtrado", type="primary"):
+                    if not tiendas_seleccionadas:
+                        st.warning("Selecciona al menos una tienda.")
+                    else:
+                        consolidado_filtrado = cons_guardado[
+                            cons_guardado["tienda"].isin(tiendas_seleccionadas)
+                        ]
+                        csv_df = pk.generar_csv_wms(
+                            consolidado_filtrado,
+                            st.session_state["pedido_guardado_fecha_emision"],
+                            st.session_state["pedido_guardado_fecha_entrega"],
+                        )
+                        csv_bytes = csv_df.to_csv(index=False, sep=";").encode("utf-8-sig")
+                        st.session_state["last_csv_bytes"] = csv_bytes
+                        st.session_state["last_csv_name"] = f"consolidado_wms_{week_tag}.csv"
+                        st.success(
+                            f"CSV generado para {len(tiendas_seleccionadas)} tienda(s) — "
+                            f"{len(consolidado_filtrado)} líneas."
+                        )
+
+                if "last_csv_bytes" in st.session_state:
+                    st.download_button(
+                        "Descargar CSV para WMS",
+                        data=st.session_state["last_csv_bytes"],
+                        file_name=st.session_state["last_csv_name"],
+                        mime="text/csv",
+                    )
+
 # ------------------------------------------------------------------
-# TAB 2: Validacion por escaneo
+# TAB 2: Validacion por escaneo — en dos fases:
+#   Fase 1: elegir semana y tienda
+#   Fase 2: pantalla dedicada de escaneo (grande, clara, para el operario)
 # ------------------------------------------------------------------
 with tab2:
-    st.subheader("Validacion de picking por escaneo")
-
     weeks = db.list_week_tags(conn)
+
     if not weeks:
+        st.subheader("Validacion de picking por escaneo")
         st.info("Primero carga un pedido en la pestaña 1.")
-    else:
+
+    elif not st.session_state.get("escaneo_activo"):
+        # -------------------- FASE 1: selección --------------------
+        st.subheader("Validacion de picking por escaneo")
+        st.caption("Elige la semana y la tienda que vas a validar, luego inicia el escaneo.")
+
         week_sel = st.selectbox("Semana", weeks, key="val_week")
         tiendas = db.list_tiendas(conn, week_sel)
         tienda_labels = {f"{t} - {n}": t for t, n in tiendas}
         tienda_label_sel = st.selectbox("Tienda", list(tienda_labels.keys()), key="val_tienda")
         tienda_sel = tienda_labels[tienda_label_sel]
+
+        if st.button("▶ Iniciar validación de esta tienda", type="primary"):
+            st.session_state["escaneo_activo"] = True
+            st.session_state["escaneo_week"] = week_sel
+            st.session_state["escaneo_tienda"] = tienda_sel
+            st.session_state["escaneo_tienda_nombre"] = tienda_label_sel
+            st.rerun()
+
+    else:
+        # -------------------- FASE 2: pantalla de escaneo --------------------
+        week_sel = st.session_state["escaneo_week"]
+        tienda_sel = st.session_state["escaneo_tienda"]
+        tienda_nombre = st.session_state["escaneo_tienda_nombre"]
+
+        header_col, salir_col = st.columns([5, 1])
+        with header_col:
+            st.markdown(
+                f"""<div class="tienda-activa-header">
+                        <h2>📦 {tienda_nombre}</h2>
+                        <span>Semana {week_sel}</span>
+                    </div>""",
+                unsafe_allow_html=True,
+            )
+        with salir_col:
+            if st.button("⬅ Cambiar tienda"):
+                st.session_state["escaneo_activo"] = False
+                st.rerun()
 
         solicitado_map = db.get_pedido_tienda(conn, week_sel, tienda_sel)
 
@@ -118,14 +243,16 @@ with tab2:
             st.session_state[cache_key] = db.get_scans_tienda(conn, week_sel, tienda_sel)
         scans_map = st.session_state[cache_key]
 
-        st.markdown("#### Escanear producto")
         with st.form("scan_form", clear_on_submit=True):
             codigo_input = st.text_input(
-                "Codigo escaneado",
+                "Escanea el código",
                 key="scan_input",
-                placeholder="Escanea aqui con el lector USB (o escribe el codigo y Enter)",
+                placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
+                label_visibility="visible",
             )
-            submitted = st.form_submit_button("Registrar")
+            submitted = st.form_submit_button("✅ Registrar escaneo")
+
+        resultado_box = st.empty()
 
         if submitted and codigo_input:
             # El lector escanea el código tal como viene en la etiqueta (con punto,
@@ -147,14 +274,16 @@ with tab2:
                 st.session_state[cache_key] = scans_map
 
             if resultado["estado"] == "no_pertenece":
-                st.error(f"❌ El código **{codigo_limpio}** NO pertenece al pedido de la tienda {tienda_sel}.")
+                resultado_box.error(
+                    f"❌ El código **{codigo_limpio}** NO pertenece al pedido de esta tienda."
+                )
             elif resultado["estado"] == "excedente":
-                st.warning(
+                resultado_box.warning(
                     f"⚠️ El código **{codigo_limpio}** ya alcanzó la cantidad solicitada "
                     f"({resultado['solicitado']}). Esta unidad se registra como **devolución**."
                 )
             else:
-                st.success(
+                resultado_box.success(
                     f"✅ OK — {codigo_limpio}: {resultado['escaneado_total']} / {resultado['solicitado']}"
                 )
 
@@ -180,17 +309,20 @@ with tab2:
 
         resumen_df = pd.DataFrame(resumen_rows)
         if not resumen_df.empty:
-            st.dataframe(resumen_df, use_container_width=True)
-
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Solicitado total", int(resumen_df["solicitado"].sum()))
-            c2.metric("Tenido total", int(resumen_df["tenido"].sum()))
-            c3.metric("Falta total", int(resumen_df["falta"].sum()))
-            c4.metric("Devuelto total", int(resumen_df["devuelto"].sum()))
+            c1.metric("Solicitado", int(resumen_df["solicitado"].sum()))
+            c2.metric("Tenido", int(resumen_df["tenido"].sum()))
+            c3.metric("Falta", int(resumen_df["falta"].sum()))
+            c4.metric("Devuelto", int(resumen_df["devuelto"].sum()))
 
-            if st.button("Cerrar validacion y guardar en historial", type="primary"):
+            with st.expander("Ver detalle por código", expanded=False):
+                st.dataframe(resumen_df, use_container_width=True)
+
+            st.markdown("")
+            if st.button("🔒 Cerrar validación y guardar en historial", type="primary"):
                 db.guardar_historial(conn, week_sel, tienda_sel, resumen_rows)
-                st.success(f"Historial guardado para semana {week_sel}, tienda {tienda_sel}.")
+                st.success(f"Historial guardado para {tienda_nombre} — semana {week_sel}.")
+                st.balloons()
         else:
             st.info("No hay items en el pedido para esta tienda.")
 
