@@ -331,7 +331,12 @@ def get_historial(conn, week_tag=None, tienda=None):
 def get_ultimo_detalle_validacion(conn, week_tag, tienda):
     """Devuelve el detalle por código (lista de dicts: codigo, solicitado,
     tenido, falta, devuelto) de la ÚLTIMA validación cerrada para esa
-    tienda/semana. None si no se ha cerrado ninguna validación."""
+    tienda/semana. None si no se ha cerrado ninguna validación.
+
+    Nota: si necesitas el detalle de VARIAS tiendas (ej. para el reporte),
+    usa get_ultimo_detalle_validacion_todas en su lugar — esta función hace
+    una lectura completa de la hoja 'historial' cada vez que se llama, así
+    que llamarla en un loop por tienda agota la cuota de la API rápido."""
     ws = conn.worksheet("historial")
     df = _records_df(ws, HISTORIAL_HEADERS)
     if df.empty:
@@ -344,3 +349,26 @@ def get_ultimo_detalle_validacion(conn, week_tag, tienda):
     if not detalle_json:
         return None
     return json.loads(detalle_json)
+
+
+def get_ultimo_detalle_validacion_todas(conn, week_tag):
+    """Como get_ultimo_detalle_validacion, pero para TODAS las tiendas de la
+    semana en una sola lectura de la hoja. Devuelve un dict {tienda: [items]}.
+    Úsala cuando necesites el detalle de varias tiendas (ej. el reporte)."""
+    ws = conn.worksheet("historial")
+    df = _records_df(ws, HISTORIAL_HEADERS)
+    if df.empty:
+        return {}
+    df = df[df["week_tag"].astype(str) == str(week_tag)]
+    if df.empty:
+        return {}
+    df = df.sort_values("fecha_cierre", ascending=False)
+
+    resultado = {}
+    for _, row in df.iterrows():
+        tienda = str(row["tienda"])
+        if tienda in resultado:
+            continue  # ya tenemos la más reciente de esta tienda
+        detalle_json = row["detalle_json"]
+        resultado[tienda] = json.loads(detalle_json) if detalle_json else []
+    return resultado

@@ -53,6 +53,11 @@ def generar_reporte(db, conn, week_tag):
 
     detalle_rows = []
 
+    # Una sola lectura del historial completo de la semana (con detalle por
+    # código), en vez de una lectura por tienda — evita agotar la cuota de
+    # la API de Google Sheets cuando hay muchas tiendas.
+    detalle_validacion_por_tienda = db.get_ultimo_detalle_validacion_todas(conn, week_tag)
+
     for tienda, nombre in tiendas:
         pedido_map = db.get_pedido_tienda(conn, week_tag, tienda)
         cuenta_codigos = len(pedido_map)
@@ -74,7 +79,7 @@ def generar_reporte(db, conn, week_tag):
 
         # Detalle de códigos efectivamente enviados (tenido > 0) en la
         # última validación cerrada de esta tienda.
-        detalle_validacion = db.get_ultimo_detalle_validacion(conn, week_tag, tienda)
+        detalle_validacion = detalle_validacion_por_tienda.get(str(tienda))
         if not detalle_validacion:
             continue
 

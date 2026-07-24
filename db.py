@@ -270,3 +270,22 @@ def get_ultimo_detalle_validacion(conn, week_tag, tienda):
     if not row:
         return None
     return json.loads(row[0])
+
+
+def get_ultimo_detalle_validacion_todas(conn, week_tag):
+    """Como get_ultimo_detalle_validacion, pero para TODAS las tiendas de la
+    semana de una vez. Devuelve un dict {tienda: [items]}."""
+    import json
+
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT tienda, detalle_json FROM historial
+           WHERE week_tag = ? ORDER BY fecha_cierre DESC""",
+        (week_tag,),
+    )
+    resultado = {}
+    for tienda, detalle_json in cur.fetchall():
+        if tienda in resultado:
+            continue
+        resultado[tienda] = json.loads(detalle_json) if detalle_json else []
+    return resultado
