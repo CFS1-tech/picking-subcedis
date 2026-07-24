@@ -34,22 +34,16 @@ def generar_reporte(db, conn, week_tag):
     ultimo_cierre = _ultimo_cierre_por_tienda(historial_rows)
 
     resumen_rows = []
-    detalle_rows = []
+
+    # Detalle: se usa el pedido CRUDO (una fila por línea original, sin
+    # consolidar), igual que el reporte de referencia — no el consolidado
+    # que usa la app para validar/generar el CSV del WMS.
+    detalle_df = db.get_pedido_detalle(conn, week_tag)
 
     for tienda, nombre in tiendas:
         pedido_map = db.get_pedido_tienda(conn, week_tag, tienda)
         cuenta_codigos = len(pedido_map)
         suma_solicitada = sum(pedido_map.values())
-
-        for codigo, cantidad in sorted(pedido_map.items()):
-            detalle_rows.append(
-                {
-                    "codigo_departamento": tienda,
-                    "nombre_departamento": nombre,
-                    "codigo_color": codigo,
-                    "unidades_solicitadas": cantidad,
-                }
-            )
 
         cierre = ultimo_cierre.get(tienda)
         resumen_rows.append(
@@ -66,7 +60,6 @@ def generar_reporte(db, conn, week_tag):
         )
 
     resumen_df = pd.DataFrame(resumen_rows)
-    detalle_df = pd.DataFrame(detalle_rows)
 
     # Fila de totales generales
     if not resumen_df.empty:

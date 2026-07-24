@@ -41,11 +41,31 @@ def quitar_punto(codigo):
     return str(codigo).replace(".", "").strip()
 
 
+def _partir_codigo(codigo_color):
+    """Separa 'cod' y 'color' a partir de codigo_color (ej. '146590.056' -> ('146590','056')).
+    Si no hay punto, 'color' queda vacío."""
+    if codigo_color is None:
+        return "", ""
+    texto = str(codigo_color).strip()
+    if "." in texto:
+        cod, color = texto.split(".", 1)
+        return cod, color
+    return texto, ""
+
+
 def cargar_y_consolidar(xlsx_path_or_buffer):
-    """Lee el pedido y devuelve (week_tag, df_consolidado).
+    """Lee el pedido y devuelve (week_tag, df_consolidado, df_detalle_crudo).
 
     df_consolidado columns: tienda, nombre_tienda, codigo, cantidad_solicitada
     Agrupado por tienda + codigo (sin punto), sumando unidades_solicitadas.
+    Se usa para la validación y el CSV del WMS.
+
+    df_detalle_crudo: una fila por cada línea original del pedido (sin
+    consolidar, tal como venía en el Excel), con columnas id_cabecera,
+    id_linea, codigo_departamento, nombre_departamento, codigo_color,
+    codigo (sin punto), unidades_solicitadas, unidades_recibidas,
+    cabecera_original, articulo_original, cod, color.
+    Se usa solo para el reporte descargable (pestaña de detalle).
     """
     sheet_name = find_picking_sheet(xlsx_path_or_buffer)
     week_tag = extract_week_tag(sheet_name)
@@ -69,7 +89,26 @@ def cargar_y_consolidar(xlsx_path_or_buffer):
         .rename(columns={"unidades_solicitadas": "cantidad_solicitada"})
     )
     consolidado = consolidado.sort_values(["tienda", "codigo"]).reset_index(drop=True)
-    return week_tag, consolidado
+
+    partidos = df["codigo_color"].apply(_partir_codigo)
+    detalle = pd.DataFrame(
+        {
+            "id_cabecera": df["id_cabecera"],
+            "id_linea": df["id_linea"],
+            "codigo_departamento": df["tienda"],
+            "nombre_departamento": df["nombre_tienda"],
+            "codigo_color": df["codigo_color"],
+            "codigo": df["codigo"],
+            "unidades_solicitadas": df["unidades_solicitadas"],
+            "unidades_recibidas": pd.to_numeric(df["unidades_recibidas"], errors="coerce").fillna(0),
+            "cabecera_original": df["cabecera_original"],
+            "articulo_original": df["articulo_original"],
+            "cod": [p[0] for p in partidos],
+            "color": [p[1] for p in partidos],
+        }
+    ).reset_index(drop=True)
+
+    return week_tag, consolidado, detalle
 
 
 def generar_csv_wms(consolidado_df, fecha_emision, fecha_entrega):

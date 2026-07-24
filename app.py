@@ -45,7 +45,7 @@ with tab1:
 
     if uploaded is not None:
         try:
-            week_tag, consolidado = pk.cargar_y_consolidar(uploaded)
+            week_tag, consolidado, detalle_crudo = pk.cargar_y_consolidar(uploaded)
         except Exception as e:
             st.error(f"Error al leer el archivo: {e}")
         else:
@@ -70,6 +70,7 @@ with tab1:
 
             if st.button("Guardar pedido y generar CSV para WMS", type="primary"):
                 db.replace_pedido(conn, week_tag, consolidado)
+                db.guardar_pedido_detalle(conn, week_tag, detalle_crudo)
                 # limpia el cache de escaneos en sesión de esta semana (el pedido
                 # se reemplazó, así que los escaneos previos ya no aplican)
                 for key in list(st.session_state.keys()):

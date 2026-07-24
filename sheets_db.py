@@ -29,6 +29,11 @@ HISTORIAL_HEADERS = [
     "week_tag", "tienda", "fecha_cierre",
     "solicitado_total", "tenido_total", "faltante_total", "devuelto_total", "detalle_json",
 ]
+PEDIDO_DETALLE_HEADERS = [
+    "week_tag", "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
+    "codigo_color", "codigo", "unidades_solicitadas", "unidades_recibidas",
+    "cabecera_original", "articulo_original", "cod", "color",
+]
 
 
 def _get_credentials():
@@ -81,6 +86,7 @@ def _ensure_all_worksheets(_sh):
     _ensure_worksheet(_sh, "pedido_items", PEDIDO_HEADERS)
     _ensure_worksheet(_sh, "scans", SCANS_HEADERS)
     _ensure_worksheet(_sh, "historial", HISTORIAL_HEADERS)
+    _ensure_worksheet(_sh, "pedido_detalle", PEDIDO_DETALLE_HEADERS)
     return True
 
 
@@ -143,6 +149,30 @@ def replace_pedido(conn, week_tag, df):
         _write_df(scans_ws, scans_df, SCANS_HEADERS)
 
     _pedido_df_cached.clear()  # el pedido cambió, invalidamos el cache
+
+
+def guardar_pedido_detalle(conn, week_tag, detalle_df):
+    """Guarda el detalle crudo del pedido (una fila por línea original, sin
+    consolidar), usado únicamente por el reporte descargable."""
+    ws = conn.worksheet("pedido_detalle")
+    current = _records_df(ws, PEDIDO_DETALLE_HEADERS)
+    if not current.empty:
+        current = current[current["week_tag"].astype(str) != str(week_tag)]
+
+    new_rows = detalle_df.copy()
+    new_rows["week_tag"] = week_tag
+    new_rows = new_rows[PEDIDO_DETALLE_HEADERS]
+
+    result = pd.concat([current, new_rows], ignore_index=True)
+    _write_df(ws, result, PEDIDO_DETALLE_HEADERS)
+
+
+def get_pedido_detalle(conn, week_tag):
+    ws = conn.worksheet("pedido_detalle")
+    df = _records_df(ws, PEDIDO_DETALLE_HEADERS)
+    if df.empty:
+        return df
+    return df[df["week_tag"].astype(str) == str(week_tag)].drop(columns=["week_tag"]).reset_index(drop=True)
 
 
 def list_week_tags(conn):

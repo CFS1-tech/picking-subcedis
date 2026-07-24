@@ -51,10 +51,63 @@ def init_db():
             devuelto_total REAL,
             detalle_json TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS pedido_detalle (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_tag TEXT NOT NULL,
+            id_cabecera TEXT,
+            id_linea TEXT,
+            codigo_departamento TEXT,
+            nombre_departamento TEXT,
+            codigo_color TEXT,
+            codigo TEXT,
+            unidades_solicitadas REAL,
+            unidades_recibidas REAL,
+            cabecera_original TEXT,
+            articulo_original TEXT,
+            cod TEXT,
+            color TEXT
+        );
         """
     )
     conn.commit()
     return conn
+
+
+def guardar_pedido_detalle(conn, week_tag, detalle_df):
+    """Guarda el detalle crudo del pedido (una fila por línea original, sin
+    consolidar), usado únicamente por el reporte descargable."""
+    cur = conn.cursor()
+    cur.execute("DELETE FROM pedido_detalle WHERE week_tag = ?", (week_tag,))
+    for _, row in detalle_df.iterrows():
+        cur.execute(
+            """INSERT INTO pedido_detalle
+               (week_tag, id_cabecera, id_linea, codigo_departamento, nombre_departamento,
+                codigo_color, codigo, unidades_solicitadas, unidades_recibidas,
+                cabecera_original, articulo_original, cod, color)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                week_tag, row["id_cabecera"], row["id_linea"], row["codigo_departamento"],
+                row["nombre_departamento"], row["codigo_color"], row["codigo"],
+                row["unidades_solicitadas"], row["unidades_recibidas"],
+                row["cabecera_original"], row["articulo_original"], row["cod"], row["color"],
+            ),
+        )
+    conn.commit()
+
+
+def get_pedido_detalle(conn, week_tag):
+    """Devuelve el detalle crudo (lista de dicts) del pedido para esa semana."""
+    import pandas as pd
+    cols = [
+        "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
+        "codigo_color", "codigo", "unidades_solicitadas", "unidades_recibidas",
+        "cabecera_original", "articulo_original", "cod", "color",
+    ]
+    cur = conn.cursor()
+    cur.execute(f"SELECT {', '.join(cols)} FROM pedido_detalle WHERE week_tag = ?", (week_tag,))
+    rows = cur.fetchall()
+    return pd.DataFrame(rows, columns=cols)
 
 
 def replace_pedido(conn, week_tag, df):
