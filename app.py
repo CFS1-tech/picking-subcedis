@@ -112,7 +112,12 @@ with tab2:
             submitted = st.form_submit_button("Registrar")
 
         if submitted and codigo_input:
-            codigo_limpio = codigo_input.strip()
+            # El lector escanea el código tal como viene en la etiqueta (con punto,
+            # ej. 150079.001). El pedido consolidado lo guarda sin punto, así que
+            # aplicamos la misma limpieza usada al armar el consolidado para que
+            # crucen exactamente. Todo se trata como texto (nunca como número),
+            # por lo que ceros finales tipo .010 o .1140 no se pierden ni se redondean.
+            codigo_limpio = pk.quitar_punto(codigo_input.strip())
             resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map)
             if resultado["estado"] == "no_pertenece":
                 st.error(f"❌ El código **{codigo_limpio}** NO pertenece al pedido de la tienda {tienda_sel}.")
