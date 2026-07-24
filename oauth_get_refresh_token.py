@@ -27,23 +27,38 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+OUTPUT_FILE = "secrets_generado.toml"
+
 
 def main():
-    if len(sys.argv) != 2:
-        print("Uso: python oauth_get_refresh_token.py ruta/a/client_secret.json")
+    if len(sys.argv) < 2:
+        print("Uso: python oauth_get_refresh_token.py ruta/a/client_secret.json [spreadsheet_id]")
         sys.exit(1)
 
     client_secret_path = sys.argv[1]
+    spreadsheet_id = sys.argv[2] if len(sys.argv) > 2 else "PEGA_AQUI_EL_ID_DE_TU_GOOGLE_SHEET"
+
     flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, SCOPES)
     creds = flow.run_local_server(port=0)
 
-    print("\n===== Copia esto a tu secrets.toml =====\n")
-    print("[gcp_oauth]")
-    print(f'client_id = "{creds.client_id}"')
-    print(f'client_secret = "{creds.client_secret}"')
-    print(f'refresh_token = "{creds.refresh_token}"')
-    print('spreadsheet_id = "PEGA_AQUI_EL_ID_DE_TU_GOOGLE_SHEET"')
-    print("\n=========================================\n")
+    contenido = (
+        "[gcp_oauth]\n"
+        f'client_id = "{creds.client_id}"\n'
+        f'client_secret = "{creds.client_secret}"\n'
+        f'refresh_token = "{creds.refresh_token}"\n'
+        f'spreadsheet_id = "{spreadsheet_id}"\n'
+    )
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+        f.write(contenido)
+
+    print(f"\nListo. Se guardó el archivo '{OUTPUT_FILE}' en esta misma carpeta.")
+    print("Abre ese archivo, copia TODO su contenido (Ctrl+A, Ctrl+C) y pégalo")
+    print("tal cual en los Secrets de Streamlit Cloud. Así evitas errores de copiado")
+    print("por saltos de línea que la consola introduce al mostrar textos largos.\n")
+    print("También se imprime aquí abajo por si prefieres copiarlo directo, pero")
+    print("es más seguro usar el archivo:\n")
+    print(contenido)
 
 
 if __name__ == "__main__":
