@@ -326,3 +326,21 @@ def get_historial(conn, week_tag=None, tienda=None):
     df = df.sort_values("fecha_cierre", ascending=False)
     cols = HISTORIAL_HEADERS[:-1]  # sin detalle_json, igual que db.get_historial
     return list(df[cols].itertuples(index=False, name=None))
+
+
+def get_ultimo_detalle_validacion(conn, week_tag, tienda):
+    """Devuelve el detalle por código (lista de dicts: codigo, solicitado,
+    tenido, falta, devuelto) de la ÚLTIMA validación cerrada para esa
+    tienda/semana. None si no se ha cerrado ninguna validación."""
+    ws = conn.worksheet("historial")
+    df = _records_df(ws, HISTORIAL_HEADERS)
+    if df.empty:
+        return None
+    df = df[(df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))]
+    if df.empty:
+        return None
+    df = df.sort_values("fecha_cierre", ascending=False)
+    detalle_json = df.iloc[0]["detalle_json"]
+    if not detalle_json:
+        return None
+    return json.loads(detalle_json)

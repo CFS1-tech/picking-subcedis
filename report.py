@@ -28,17 +28,30 @@ def _ultimo_cierre_por_tienda(historial_rows):
 
 
 def generar_reporte(db, conn, week_tag):
-    """Devuelve (bytes_xlsx, resumen_df, detalle_df) para la semana dada."""
+    """Devuelve (bytes_xlsx, resumen_df, detalle_df) para la semana dada.
+
+    El detalle solo incluye los códigos que efectivamente se enviaron según
+    la última validación cerrada de cada tienda (tenido > 0), y la cantidad
+    mostrada es la enviada (tenido), no la solicitada originalmente. Las
+    tiendas sin validación cerrada no aparecen en el detalle (nada
+    confirmado como enviado todavía)."""
     tiendas = db.list_tiendas(conn, week_tag)
     historial_rows = db.get_historial(conn, week_tag=week_tag)
     ultimo_cierre = _ultimo_cierre_por_tienda(historial_rows)
 
     resumen_rows = []
 
-    # Detalle: se usa el pedido CRUDO (una fila por línea original, sin
-    # consolidar), igual que el reporte de referencia — no el consolidado
-    # que usa la app para validar/generar el CSV del WMS.
-    detalle_df = db.get_pedido_detalle(conn, week_tag)
+    # Pedido crudo (una fila por línea original) para sacar las columnas
+    # descriptivas (codigo_color, cod, color, id_cabecera, id_linea, etc.).
+    # Nos quedamos con una fila por código+tienda (la primera), ya que la
+    # cantidad real a mostrar viene de la validación, no de estas líneas.
+    detalle_crudo = db.get_pedido_detalle(conn, week_tag)
+    if not detalle_crudo.empty:
+        detalle_crudo = detalle_crudo.drop_duplicates(
+            subset=["codigo_departamento", "codigo"], keep="first"
+        )
+
+    detalle_rows = []
 
     for tienda, nombre in tiendas:
         pedido_map = db.get_pedido_tienda(conn, week_tag, tienda)
@@ -59,7 +72,50 @@ def generar_reporte(db, conn, week_tag):
             }
         )
 
+        # Detalle de códigos efectivamente enviados (tenido > 0) en la
+        # última validación cerrada de esta tienda.
+        detalle_validacion = db.get_ultimo_detalle_validacion(conn, week_tag, tienda)
+        if not detalle_validacion:
+            continue
+
+        for item in detalle_validacion:
+            tenido = item.get("tenido", 0) or 0
+            if tenido <= 0:
+                continue
+            codigo = item.get("codigo")
+            fila_base = {}
+            if not detalle_crudo.empty:
+                match = detalle_crudo[
+                    (detalle_crudo["codigo_departamento"] == tienda) & (detalle_crudo["codigo"] == codigo)
+                ]
+                if not match.empty:
+                    fila_base = match.iloc[0].to_dict()
+
+            detalle_rows.append(
+                {
+                    "id_cabecera": fila_base.get("id_cabecera", ""),
+                    "id_linea": fila_base.get("id_linea", ""),
+                    "codigo_departamento": tienda,
+                    "nombre_departamento": nombre,
+                    "codigo_color": fila_base.get("codigo_color", codigo),
+                    "codigo": codigo,
+                    "unidades_picking": tenido,
+                    "cabecera_original": fila_base.get("cabecera_original", ""),
+                    "articulo_original": fila_base.get("articulo_original", ""),
+                    "cod": fila_base.get("cod", ""),
+                    "color": fila_base.get("color", ""),
+                }
+            )
+
     resumen_df = pd.DataFrame(resumen_rows)
+    detalle_df = pd.DataFrame(
+        detalle_rows,
+        columns=[
+            "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
+            "codigo_color", "codigo", "unidades_picking",
+            "cabecera_original", "articulo_original", "cod", "color",
+        ],
+    )
 
     # Fila de totales generales
     if not resumen_df.empty:

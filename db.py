@@ -251,3 +251,22 @@ def get_historial(conn, week_tag=None, tienda=None):
     q += " ORDER BY fecha_cierre DESC"
     cur.execute(q, params)
     return cur.fetchall()
+
+
+def get_ultimo_detalle_validacion(conn, week_tag, tienda):
+    """Devuelve el detalle por código (lista de dicts: codigo, solicitado,
+    tenido, falta, devuelto) de la ÚLTIMA validación cerrada para esa
+    tienda/semana. None si no se ha cerrado ninguna validación."""
+    import json
+
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT detalle_json FROM historial
+           WHERE week_tag = ? AND tienda = ?
+           ORDER BY fecha_cierre DESC LIMIT 1""",
+        (week_tag, tienda),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    return json.loads(row[0])
