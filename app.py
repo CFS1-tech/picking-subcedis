@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import parser as pk
+import report
 
 st.set_page_config(page_title="Picking Subcedis", layout="wide")
 
@@ -222,6 +223,35 @@ with tab3:
         st.dataframe(hist_df, use_container_width=True)
     else:
         st.info("Aún no hay historial guardado. Cierra una validación en la pestaña 2 para generar registros.")
+
+    st.markdown("---")
+    st.markdown("#### Reporte descargable (solicitado + validación por tienda)")
+    st.caption(
+        "Genera un Excel con una pestaña RESUMEN (por tienda: cantidad de códigos, "
+        "solicitado, tenido, falta y devuelto según la última validación cerrada) y una "
+        "pestaña de DETALLE con el pedido consolidado, igual que tu reporte de referencia."
+    )
+
+    if weeks:
+        week_reporte = st.selectbox("Semana para el reporte", weeks, key="reporte_week")
+        if st.button("Generar reporte"):
+            reporte_bytes, resumen_preview, _ = report.generar_reporte(db, conn, week_reporte)
+            st.session_state["reporte_bytes"] = reporte_bytes
+            st.session_state["reporte_name"] = f"REPOR Picking Subcedis {week_reporte}.xlsx"
+            st.session_state["reporte_preview"] = resumen_preview
+
+        if "reporte_preview" in st.session_state:
+            st.dataframe(st.session_state["reporte_preview"], use_container_width=True)
+
+        if "reporte_bytes" in st.session_state:
+            st.download_button(
+                "Descargar reporte Excel",
+                data=st.session_state["reporte_bytes"],
+                file_name=st.session_state["reporte_name"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+    else:
+        st.info("Primero carga un pedido en la pestaña 1 para poder generar un reporte.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Persistencia activa: **{PERSISTENCIA}**")
