@@ -367,7 +367,10 @@ def guardar_historial(conn, week_tag, tienda, resumen_rows):
 
 def get_historial(conn, week_tag=None, tienda=None):
     ws = conn.worksheet("historial")
-    df = _records_df(ws, HISTORIAL_HEADERS)
+    # tienda(2): no numericé, para que el valor devuelto sea siempre texto
+    # (ej. "4207") y se pueda comparar/usar como clave de forma consistente
+    # con el resto de funciones (list_tiendas, get_pedido_tienda, etc.)
+    df = _records_df(ws, HISTORIAL_HEADERS, numericise_ignore=[2])
     if df.empty:
         return []
     if week_tag:

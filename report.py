@@ -17,6 +17,7 @@ def _ultimo_cierre_por_tienda(historial_rows):
     ultimo = {}
     for row in historial_rows:
         _, tienda, _fecha, solicitado, tenido, falta, devuelto = row
+        tienda = str(tienda)  # por si acaso llega como número
         if tienda not in ultimo:
             ultimo[tienda] = {
                 "solicitado_val": solicitado,
@@ -63,7 +64,7 @@ def generar_reporte(db, conn, week_tag):
         cuenta_codigos = len(pedido_map)
         suma_solicitada = sum(pedido_map.values())
 
-        cierre = ultimo_cierre.get(tienda)
+        cierre = ultimo_cierre.get(str(tienda))
         resumen_rows.append(
             {
                 "codigo_departamento": tienda,
