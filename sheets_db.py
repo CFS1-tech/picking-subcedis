@@ -110,7 +110,10 @@ def _write_df(ws, df, headers):
     ws.append_row(headers)
     if not df.empty:
         rows = df[headers].fillna("").values.tolist()
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        # RAW (no USER_ENTERED): evita que Sheets "interprete" texto como
+        # "005" y lo convierta al número 5, perdiendo ceros a la izquierda
+        # en columnas como codigo, cod o color.
+        ws.append_rows(rows, value_input_option="RAW")
 
 
 # ------------------------------------------------------------------
@@ -274,12 +277,12 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         ws.update(
             f"A{row_number}:F{row_number}",
             [[week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now]],
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
     else:
         response = ws.append_row(
             [week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now],
-            value_input_option="USER_ENTERED",
+            value_input_option="RAW",
         )
         # obtenemos el número de fila directo de la respuesta de la API,
         # sin necesidad de una lectura extra (updatedRange ej. "scans!A6:F6")
@@ -319,7 +322,7 @@ def guardar_historial(conn, week_tag, tienda, resumen_rows):
             devuelto_total,
             json.dumps(resumen_rows, ensure_ascii=False),
         ],
-        value_input_option="USER_ENTERED",
+        value_input_option="RAW",
     )
 
 
