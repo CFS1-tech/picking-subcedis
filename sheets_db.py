@@ -73,13 +73,22 @@ def _ensure_worksheet(sh, title, headers):
     return ws
 
 
+@st.cache_resource(show_spinner=False)
+def _ensure_all_worksheets(_sh):
+    """Se ejecuta UNA sola vez por sesión (cacheado), no en cada rerun de
+    Streamlit. Antes esto se repetía en cada clic (3 llamadas a la API de
+    metadatos por rerun), lo cual agotaba la cuota rápidamente."""
+    _ensure_worksheet(_sh, "pedido_items", PEDIDO_HEADERS)
+    _ensure_worksheet(_sh, "scans", SCANS_HEADERS)
+    _ensure_worksheet(_sh, "historial", HISTORIAL_HEADERS)
+    return True
+
+
 def init_db():
     """Equivalente a db.init_db(): asegura que existan las 3 pestañas con encabezados.
     Devuelve el objeto Spreadsheet (se pasa como 'conn' al resto de funciones)."""
     sh = _get_spreadsheet()
-    _ensure_worksheet(sh, "pedido_items", PEDIDO_HEADERS)
-    _ensure_worksheet(sh, "scans", SCANS_HEADERS)
-    _ensure_worksheet(sh, "historial", HISTORIAL_HEADERS)
+    _ensure_all_worksheets(sh)
     return sh
 
 
