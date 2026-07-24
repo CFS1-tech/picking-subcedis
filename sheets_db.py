@@ -101,6 +101,15 @@ def _write_df(ws, df, headers):
 # ------------------------------------------------------------------
 # pedido_items
 # ------------------------------------------------------------------
+# El pedido casi no cambia durante una sesión de escaneo, así que cacheamos
+# estas lecturas (evita relecturas de toda la hoja en cada rerun de Streamlit,
+# que es lo que agota la cuota de la API de Google Sheets al escanear seguido).
+@st.cache_data(ttl=120, show_spinner=False)
+def _pedido_df_cached(_conn, cache_key):
+    ws = _conn.worksheet("pedido_items")
+    return _records_df(ws, PEDIDO_HEADERS)
+
+
 def replace_pedido(conn, week_tag, df):
     sh = conn
     ws = sh.worksheet("pedido_items")
@@ -124,18 +133,18 @@ def replace_pedido(conn, week_tag, df):
         scans_df = scans_df[scans_df["week_tag"].astype(str) != str(week_tag)]
         _write_df(scans_ws, scans_df, SCANS_HEADERS)
 
+    _pedido_df_cached.clear()  # el pedido cambió, invalidamos el cache
+
 
 def list_week_tags(conn):
-    ws = conn.worksheet("pedido_items")
-    df = _records_df(ws, PEDIDO_HEADERS)
+    df = _pedido_df_cached(conn, "all")
     if df.empty:
         return []
     return sorted(df["week_tag"].astype(str).unique(), reverse=True)
 
 
 def list_tiendas(conn, week_tag):
-    ws = conn.worksheet("pedido_items")
-    df = _records_df(ws, PEDIDO_HEADERS)
+    df = _pedido_df_cached(conn, "all")
     if df.empty:
         return []
     df = df[df["week_tag"].astype(str) == str(week_tag)]
@@ -144,8 +153,7 @@ def list_tiendas(conn, week_tag):
 
 
 def get_pedido_tienda(conn, week_tag, tienda):
-    ws = conn.worksheet("pedido_items")
-    df = _records_df(ws, PEDIDO_HEADERS)
+    df = _pedido_df_cached(conn, "all")
     if df.empty:
         return {}
     df = df[(df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))]
@@ -155,48 +163,53 @@ def get_pedido_tienda(conn, week_tag, tienda):
 # ------------------------------------------------------------------
 # scans
 # ------------------------------------------------------------------
+# Nota de rendimiento: durante una sesión de escaneo intensivo, leer toda la
+# hoja "scans" en cada escaneo agota rápido la cuota de la API de Google
+# Sheets (~60 lecturas/min). Por eso get_scans_tienda se llama UNA vez al
+# entrar a una tienda (se cachea en session_state desde app.py), y
+# register_scan recibe el estado previo del propio código (prev_state) para
+# no tener que releer toda la hoja en cada escaneo: solo hace una escritura.
 def get_scans_tienda(conn, week_tag, tienda):
     ws = conn.worksheet("scans")
     df = _records_df(ws, SCANS_HEADERS)
     if df.empty:
         return {}
-    df = df[(df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))]
+    mask = (df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))
+    df = df[mask]
     out = {}
-    for _, r in df.iterrows():
+    for idx, r in df.iterrows():
         out[str(r["codigo"])] = {
             "escaneado": float(r["cantidad_escaneada"] or 0),
             "devuelto": float(r["cantidad_devuelta"] or 0),
+            "row": idx + 2,  # +2 por encabezado (fila 1) y por índice base 0
         }
     return out
 
 
-def register_scan(conn, week_tag, tienda, codigo, solicitado_map):
-    """Registra un escaneo directamente sobre la hoja 'scans'."""
+def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None):
+    """Registra un escaneo directamente sobre la hoja 'scans'.
+
+    prev_state (opcional): {"escaneado": x, "devuelto": y, "row": n} si ya se
+    conoce el estado previo de ese código (evita releer toda la hoja). Si es
+    None, se asume que es la primera vez que se escanea ese código en esta
+    sesión y se agrega como fila nueva.
+    """
     ws = conn.worksheet("scans")
-    df = _records_df(ws, SCANS_HEADERS)
 
     pertenece = codigo in solicitado_map
     solicitado = solicitado_map.get(codigo, 0)
 
     if not pertenece:
-        return {"estado": "no_pertenece", "solicitado": 0, "escaneado_total": 0, "devuelto_total": 0}
+        return {"estado": "no_pertenece", "solicitado": 0, "escaneado_total": 0, "devuelto_total": 0, "row": None}
 
-    mask = (
-        (df["week_tag"].astype(str) == str(week_tag))
-        & (df["tienda"].astype(str) == str(tienda))
-        & (df["codigo"].astype(str) == str(codigo))
-        if not df.empty
-        else pd.Series([], dtype=bool)
-    )
-
-    if not df.empty and mask.any():
-        idx = df.index[mask][0]
-        escaneado_prev = float(df.at[idx, "cantidad_escaneada"] or 0)
-        devuelto_prev = float(df.at[idx, "cantidad_devuelta"] or 0)
+    if prev_state is not None:
+        escaneado_prev = prev_state.get("escaneado", 0)
+        devuelto_prev = prev_state.get("devuelto", 0)
+        row_number = prev_state.get("row")
     else:
-        idx = None
         escaneado_prev = 0
         devuelto_prev = 0
+        row_number = None
 
     if escaneado_prev + 1 > solicitado:
         estado = "excedente"
@@ -209,25 +222,31 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map):
 
     now = datetime.now().isoformat(timespec="seconds")
 
-    if idx is not None:
-        # fila existe: actualizamos solo esa fila (row = idx+2 por encabezado)
-        row_number = idx + 2
+    if row_number is not None:
         ws.update(
             f"A{row_number}:F{row_number}",
             [[week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now]],
             value_input_option="USER_ENTERED",
         )
     else:
-        ws.append_row(
+        response = ws.append_row(
             [week_tag, tienda, codigo, nuevo_escaneado, nuevo_devuelto, now],
             value_input_option="USER_ENTERED",
         )
+        # obtenemos el número de fila directo de la respuesta de la API,
+        # sin necesidad de una lectura extra (updatedRange ej. "scans!A6:F6")
+        try:
+            updated_range = response["updates"]["updatedRange"]
+            row_number = int("".join(filter(str.isdigit, updated_range.split("!")[1].split(":")[0])))
+        except (KeyError, ValueError, IndexError):
+            row_number = None
 
     return {
         "estado": estado,
         "solicitado": solicitado,
         "escaneado_total": nuevo_escaneado,
         "devuelto_total": nuevo_devuelto,
+        "row": row_number,
     }
 
 

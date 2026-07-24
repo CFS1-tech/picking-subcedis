@@ -106,8 +106,13 @@ def get_scans_tienda(conn, week_tag, tienda):
     return {r[0]: {"escaneado": r[1], "devuelto": r[2]} for r in cur.fetchall()}
 
 
-def register_scan(conn, week_tag, tienda, codigo, solicitado_map):
-    """Registra un escaneo. Devuelve dict con resultado de esta lectura."""
+def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None):
+    """Registra un escaneo. Devuelve dict con resultado de esta lectura.
+
+    prev_state se ignora aquí (solo lo usa sheets_db.py para optimizar
+    llamadas a la API de Google); en SQLite siempre se relee de la base,
+    que es prácticamente instantánea al ser local.
+    """
     cur = conn.cursor()
     cur.execute(
         "SELECT cantidad_escaneada, cantidad_devuelta FROM scans WHERE week_tag=? AND tienda=? AND codigo=?",
@@ -151,6 +156,7 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map):
         "solicitado": solicitado,
         "escaneado_total": nuevo_escaneado,
         "devuelto_total": nuevo_devuelto,
+        "row": None,  # no aplica en SQLite, solo lo usa sheets_db.py
     }
 
 

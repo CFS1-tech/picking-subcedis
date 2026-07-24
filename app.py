@@ -69,6 +69,11 @@ with tab1:
 
             if st.button("Guardar pedido y generar CSV para WMS", type="primary"):
                 db.replace_pedido(conn, week_tag, consolidado)
+                # limpia el cache de escaneos en sesión de esta semana (el pedido
+                # se reemplazó, así que los escaneos previos ya no aplican)
+                for key in list(st.session_state.keys()):
+                    if key.startswith(f"scans_cache_{week_tag}_"):
+                        del st.session_state[key]
                 csv_df = pk.generar_csv_wms(consolidado, fecha_emision, fecha_entrega)
                 csv_bytes = csv_df.to_csv(index=False, sep=";").encode("utf-8-sig")
 
@@ -102,6 +107,15 @@ with tab2:
 
         solicitado_map = db.get_pedido_tienda(conn, week_sel, tienda_sel)
 
+        # Cache en sesión de los escaneos de esta tienda/semana: se carga UNA
+        # vez desde la hoja y luego se actualiza en memoria con cada escaneo,
+        # sin releer toda la hoja de Google Sheets en cada rerun (eso es lo
+        # que agotaba la cuota de la API al escanear varios códigos seguidos).
+        cache_key = f"scans_cache_{week_sel}_{tienda_sel}"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = db.get_scans_tienda(conn, week_sel, tienda_sel)
+        scans_map = st.session_state[cache_key]
+
         st.markdown("#### Escanear producto")
         with st.form("scan_form", clear_on_submit=True):
             codigo_input = st.text_input(
@@ -118,7 +132,18 @@ with tab2:
             # crucen exactamente. Todo se trata como texto (nunca como número),
             # por lo que ceros finales tipo .010 o .1140 no se pierden ni se redondean.
             codigo_limpio = pk.quitar_punto(codigo_input.strip())
-            resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map)
+            prev_state = scans_map.get(codigo_limpio)
+            resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map, prev_state)
+
+            if resultado["estado"] != "no_pertenece":
+                # actualizamos el cache en memoria, sin releer la hoja
+                scans_map[codigo_limpio] = {
+                    "escaneado": resultado["escaneado_total"],
+                    "devuelto": resultado["devuelto_total"],
+                    "row": resultado["row"],
+                }
+                st.session_state[cache_key] = scans_map
+
             if resultado["estado"] == "no_pertenece":
                 st.error(f"❌ El código **{codigo_limpio}** NO pertenece al pedido de la tienda {tienda_sel}.")
             elif resultado["estado"] == "excedente":
@@ -132,7 +157,6 @@ with tab2:
                 )
 
         st.markdown("#### Resumen en vivo")
-        scans_map = db.get_scans_tienda(conn, week_sel, tienda_sel)
 
         resumen_rows = []
         for codigo, solicitado in solicitado_map.items():
