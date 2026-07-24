@@ -172,7 +172,16 @@ def get_pedido_detalle(conn, week_tag):
     df = _records_df(ws, PEDIDO_DETALLE_HEADERS)
     if df.empty:
         return df
-    return df[df["week_tag"].astype(str) == str(week_tag)].drop(columns=["week_tag"]).reset_index(drop=True)
+    df = df[df["week_tag"].astype(str) == str(week_tag)].drop(columns=["week_tag"]).reset_index(drop=True)
+    # Google Sheets a veces interpreta columnas de texto (códigos, ids) como
+    # números al leerlas, lo que rompe los cruces por igualdad de string más
+    # adelante (ej. en report.py). Forzamos todo a texto aquí, de forma
+    # centralizada, incluyendo quitar el ".0" que pandas agrega a enteros
+    # que llegaron como float.
+    for col in ["codigo_departamento", "codigo", "cod", "color", "id_cabecera", "id_linea", "cabecera_original", "articulo_original"]:
+        df[col] = df[col].apply(lambda v: "" if v is None or v == "" else str(v))
+        df[col] = df[col].str.replace(r"\.0$", "", regex=True)
+    return df
 
 
 def list_week_tags(conn):

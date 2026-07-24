@@ -87,14 +87,26 @@ def generar_reporte(db, conn, week_tag):
             tenido = item.get("tenido", 0) or 0
             if tenido <= 0:
                 continue
-            codigo = item.get("codigo")
+            codigo = str(item.get("codigo")).strip()
             fila_base = {}
             if not detalle_crudo.empty:
+                # comparamos siempre como texto (str) por ambos lados: Google
+                # Sheets a veces guarda códigos como número, lo que rompe el
+                # cruce si se compara contra el string tal cual.
                 match = detalle_crudo[
-                    (detalle_crudo["codigo_departamento"] == tienda) & (detalle_crudo["codigo"] == codigo)
+                    (detalle_crudo["codigo_departamento"].astype(str) == str(tienda))
+                    & (detalle_crudo["codigo"].astype(str) == codigo)
                 ]
                 if not match.empty:
                     fila_base = match.iloc[0].to_dict()
+
+            cod = fila_base.get("cod", "") or ""
+            color = fila_base.get("color", "") or ""
+            cantidad_int = int(tenido) if float(tenido).is_integer() else tenido
+            # 'traspaso' se reconstruye con el mismo patrón que usa el sistema
+            # de origen (no viene en el archivo que subes, pero sigue un
+            # formato fijo: "Ubicado P2L;Reparto Salida;{cod};{color};{cantidad};NA")
+            traspaso = f"Ubicado P2L;Reparto Salida;{cod};{color};{cantidad_int};NA" if cod else ""
 
             detalle_rows.append(
                 {
@@ -107,8 +119,9 @@ def generar_reporte(db, conn, week_tag):
                     "unidades_picking": tenido,
                     "cabecera_original": fila_base.get("cabecera_original", ""),
                     "articulo_original": fila_base.get("articulo_original", ""),
-                    "cod": fila_base.get("cod", ""),
-                    "color": fila_base.get("color", ""),
+                    "cod": cod,
+                    "color": color,
+                    "traspaso": traspaso,
                 }
             )
 
@@ -118,7 +131,7 @@ def generar_reporte(db, conn, week_tag):
         columns=[
             "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
             "codigo_color", "codigo", "unidades_picking",
-            "cabecera_original", "articulo_original", "cod", "color",
+            "cabecera_original", "articulo_original", "cod", "color", "traspaso",
         ],
     )
 
