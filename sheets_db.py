@@ -94,9 +94,19 @@ def _ensure_all_worksheets(_sh):
     Streamlit. Antes esto se repetía en cada clic (3 llamadas a la API de
     metadatos por rerun), lo cual agotaba la cuota rápidamente."""
     _ensure_worksheet(_sh, "pedido_items", PEDIDO_HEADERS)
-    _ensure_worksheet(_sh, "scans", SCANS_HEADERS)
+    ws_scans = _ensure_worksheet(_sh, "scans", SCANS_HEADERS)
     _ensure_worksheet(_sh, "historial", HISTORIAL_HEADERS)
     _ensure_worksheet(_sh, "pedido_detalle", PEDIDO_DETALLE_HEADERS)
+
+    # Deja la columna 'codigo' (C) de 'scans' formateada como TEXTO por
+    # adelantado, para un rango amplio de filas. Como esto corre cacheado
+    # (una sola vez por sesión), no cuesta una llamada extra en cada escaneo,
+    # y evita que Sheets convierta códigos tipo "005" a número al guardarlos.
+    try:
+        ws_scans.format("C1:C20000", {"numberFormat": {"type": "TEXT"}})
+    except Exception:
+        pass
+
     return True
 
 
@@ -168,9 +178,15 @@ def _pedido_df_cached(_conn, cache_key):
 def replace_pedido(conn, week_tag, df):
     sh = conn
     ws = sh.worksheet("pedido_items")
-    current = _records_df(ws, PEDIDO_HEADERS)
+    # mismo cuidado que en guardar_pedido_detalle: sin numericise_ignore aquí,
+    # cada carga nueva iba dañando el 'codigo' de semanas anteriores al
+    # releerlas y reescribirlas.
+    current = _records_df(ws, PEDIDO_HEADERS, numericise_ignore=[2, 4])
     if not current.empty:
         current = current[current["week_tag"].astype(str) != str(week_tag)]
+        for col in ["tienda", "codigo"]:
+            current[col] = current[col].apply(lambda v: "" if v is None or v == "" else str(v))
+            current[col] = current[col].str.replace(r"\.0$", "", regex=True)
 
     now = _ahora().isoformat(timespec="seconds")
     new_rows = df.copy()
@@ -195,9 +211,17 @@ def guardar_pedido_detalle(conn, week_tag, detalle_df):
     """Guarda el detalle crudo del pedido (una fila por línea original, sin
     consolidar), usado únicamente por el reporte descargable."""
     ws = conn.worksheet("pedido_detalle")
-    current = _records_df(ws, PEDIDO_DETALLE_HEADERS)
+    # Importante: al releer lo existente de OTRAS semanas para preservarlo,
+    # hay que usar el mismo numericise_ignore que en get_pedido_detalle — si
+    # no, cada nueva carga de pedido iba reescribiendo (y dañando) el detalle
+    # de semanas anteriores, convirtiendo códigos tipo "001" en 1.
+    current = _records_df(ws, PEDIDO_DETALLE_HEADERS, numericise_ignore=[2, 3, 4, 6, 7, 10, 11, 12, 13])
     if not current.empty:
         current = current[current["week_tag"].astype(str) != str(week_tag)]
+        for col in ["id_cabecera", "id_linea", "codigo_departamento", "codigo_color",
+                    "codigo", "cabecera_original", "articulo_original", "cod", "color"]:
+            current[col] = current[col].apply(lambda v: "" if v is None or v == "" else str(v))
+            current[col] = current[col].str.replace(r"\.0$", "", regex=True)
 
     new_rows = detalle_df.copy()
     new_rows["week_tag"] = week_tag
@@ -270,7 +294,9 @@ def get_pedido_tienda(conn, week_tag, tienda):
 # no tener que releer toda la hoja en cada escaneo: solo hace una escritura.
 def get_scans_tienda(conn, week_tag, tienda):
     ws = conn.worksheet("scans")
-    df = _records_df(ws, SCANS_HEADERS)
+    # codigo es la 3ra columna (week_tag, tienda, codigo, ...): la excluimos
+    # de la auto-conversión numérica para no perder ceros a la izquierda.
+    df = _records_df(ws, SCANS_HEADERS, numericise_ignore=[3])
     if df.empty:
         return {}
     mask = (df["week_tag"].astype(str) == str(week_tag)) & (df["tienda"].astype(str) == str(tienda))
@@ -321,6 +347,11 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
 
     now = _ahora().isoformat(timespec="seconds")
 
+    # Nota: la columna 'codigo' (C) de esta hoja ya se deja formateada como
+    # TEXTO por adelantado (ver _ensure_all_worksheets), así que aquí no hace
+    # falta una llamada extra a la API por cada escaneo — eso agotaría la
+    # cuota rápido. RAW + formato TEXTO ya fijado es suficiente para no
+    # perder ceros a la izquierda.
     if row_number is not None:
         ws.update(
             f"A{row_number}:F{row_number}",
