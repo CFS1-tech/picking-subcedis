@@ -251,18 +251,17 @@ with tab2:
 
         if not tiendas_pendientes:
             st.success("Todas las tiendas de esta semana ya tienen su validación cerrada. 🎉")
-            st.stop()
+        else:
+            tienda_labels = {f"{t} - {n}": t for t, n in tiendas_pendientes}
+            tienda_label_sel = st.selectbox("Tienda", list(tienda_labels.keys()), key="val_tienda")
+            tienda_sel = tienda_labels[tienda_label_sel]
 
-        tienda_labels = {f"{t} - {n}": t for t, n in tiendas_pendientes}
-        tienda_label_sel = st.selectbox("Tienda", list(tienda_labels.keys()), key="val_tienda")
-        tienda_sel = tienda_labels[tienda_label_sel]
-
-        if st.button("▶ Iniciar validación de esta tienda", type="primary"):
-            st.session_state["escaneo_activo"] = True
-            st.session_state["escaneo_week"] = week_sel
-            st.session_state["escaneo_tienda"] = tienda_sel
-            st.session_state["escaneo_tienda_nombre"] = tienda_label_sel
-            st.rerun()
+            if st.button("▶ Iniciar validación de esta tienda", type="primary"):
+                st.session_state["escaneo_activo"] = True
+                st.session_state["escaneo_week"] = week_sel
+                st.session_state["escaneo_tienda"] = tienda_sel
+                st.session_state["escaneo_tienda_nombre"] = tienda_label_sel
+                st.rerun()
 
     else:
         # -------------------- FASE 2: pantalla de escaneo --------------------
