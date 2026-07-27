@@ -69,11 +69,11 @@ def generar_reporte(db, conn, week_tag):
             {
                 "codigo_departamento": tienda,
                 "nombre_departamento": nombre,
-                "Cuenta de codigo_color": cuenta_codigos,
-                "Suma de unidades_solicitadas": suma_solicitada,
-                "Tenido (validado)": cierre["tenido"] if cierre else None,
-                "Falta": cierre["falta"] if cierre else None,
-                "Devuelto": cierre["devuelto"] if cierre else None,
+                "SKU unicos": cuenta_codigos,
+                "Unidades Solicitadas": suma_solicitada,
+                "Unidades Validadas": cierre["tenido"] if cierre else None,
+                "Unidades Faltantes": cierre["falta"] if cierre else None,
+                "Excedente": cierre["devuelto"] if cierre else None,
                 "Validación cerrada": "Sí" if cierre else "No",
             }
         )
@@ -141,11 +141,11 @@ def generar_reporte(db, conn, week_tag):
         totales = {
             "codigo_departamento": "Total general",
             "nombre_departamento": "",
-            "Cuenta de codigo_color": resumen_df["Cuenta de codigo_color"].sum(),
-            "Suma de unidades_solicitadas": resumen_df["Suma de unidades_solicitadas"].sum(),
-            "Tenido (validado)": resumen_df["Tenido (validado)"].sum(skipna=True),
-            "Falta": resumen_df["Falta"].sum(skipna=True),
-            "Devuelto": resumen_df["Devuelto"].sum(skipna=True),
+            "SKU unicos": resumen_df["SKU unicos"].sum(),
+            "Unidades Solicitadas": resumen_df["Unidades Solicitadas"].sum(),
+            "Unidades Validadas": resumen_df["Unidades Validadas"].sum(skipna=True),
+            "Unidades Faltantes": resumen_df["Unidades Faltantes"].sum(skipna=True),
+            "Excedente": resumen_df["Excedente"].sum(skipna=True),
             "Validación cerrada": "",
         }
         resumen_df = pd.concat([resumen_df, pd.DataFrame([totales])], ignore_index=True)
