@@ -131,7 +131,9 @@ with tab1:
                        f"{len(consolidado)} lineas consolidadas (código único por tienda).")
 
             with st.expander("Ver consolidado (agrupado por tienda + código)", expanded=False):
-                st.dataframe(consolidado, use_container_width=True)
+                consolidado_display = consolidado.copy()
+                consolidado_display.index = range(1, len(consolidado_display) + 1)
+                st.dataframe(consolidado_display, use_container_width=True)
 
             existing_weeks = db.list_week_tags(conn)
             if week_tag in existing_weeks:
@@ -378,6 +380,9 @@ with tab2:
                 resumen_df_display = resumen_df.rename(
                     columns={"tenido": "validado", "devuelto": "excedente"}
                 )
+                for col in ["solicitado", "validado", "falta", "excedente"]:
+                    resumen_df_display[col] = resumen_df_display[col].astype(int)
+                resumen_df_display.index = range(1, len(resumen_df_display) + 1)
 
                 def _resaltar_faltantes(row):
                     if row["falta"] and row["falta"] != 0:
@@ -424,6 +429,7 @@ with tab3:
                 "solicitado_total", "validado_total", "faltante_total", "excedente_total",
             ],
         )
+        hist_df.index = range(1, len(hist_df) + 1)
         st.dataframe(hist_df, use_container_width=True)
     else:
         st.info("Aún no hay historial guardado. Cierra una validación en la pestaña 2 para generar registros.")
@@ -445,7 +451,9 @@ with tab3:
             st.session_state["reporte_preview"] = resumen_preview
 
         if "reporte_preview" in st.session_state:
-            st.dataframe(st.session_state["reporte_preview"], use_container_width=True)
+            reporte_preview_display = st.session_state["reporte_preview"].copy()
+            reporte_preview_display.index = range(1, len(reporte_preview_display) + 1)
+            st.dataframe(reporte_preview_display, use_container_width=True)
 
         if "reporte_bytes" in st.session_state:
             st.download_button(
