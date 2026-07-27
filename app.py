@@ -339,8 +339,11 @@ with tab2:
                     f"({resultado['solicitado']}). Esta unidad se registra como **excedente**."
                 )
             else:
+                def _fmt(n):
+                    return int(n) if float(n).is_integer() else n
+
                 resultado_box.success(
-                    f"✅ OK — {codigo_limpio}: {resultado['escaneado_total']} / {resultado['solicitado']}"
+                    f"✅ OK — {codigo_limpio}: {_fmt(resultado['escaneado_total'])} / {_fmt(resultado['solicitado'])}"
                 )
 
         st.markdown("#### Resumen en vivo")
@@ -375,7 +378,16 @@ with tab2:
                 resumen_df_display = resumen_df.rename(
                     columns={"tenido": "validado", "devuelto": "excedente"}
                 )
-                st.dataframe(resumen_df_display, use_container_width=True)
+
+                def _resaltar_faltantes(row):
+                    if row["falta"] and row["falta"] != 0:
+                        return ["background-color: #fdecea"] * len(row)
+                    return [""] * len(row)
+
+                st.dataframe(
+                    resumen_df_display.style.apply(_resaltar_faltantes, axis=1),
+                    use_container_width=True,
+                )
 
             st.markdown("")
             if st.button("🔒 Cerrar validación y guardar en historial", type="primary"):
