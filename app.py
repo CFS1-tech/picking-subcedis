@@ -44,6 +44,46 @@ st.markdown(
         color: white;
         margin: 0;
     }
+
+    /* ---------- Ajustes para celular (pantallas angostas) ---------- */
+    @media (max-width: 640px) {
+        /* Menos aire alrededor del contenido, aprovecha mejor la pantalla */
+        .block-container {
+            padding-top: 1.2rem !important;
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+        }
+        /* Título principal más chico para que no ocupe media pantalla */
+        h1 {
+            font-size: 1.6rem !important;
+        }
+        h2, .tienda-activa-header h2 {
+            font-size: 1.3rem !important;
+        }
+        /* Pestañas más grandes y fáciles de tocar con el dedo */
+        button[data-baseweb="tab"] {
+            font-size: 1rem !important;
+            padding: 0.6rem 0.5rem !important;
+        }
+        /* Los checkboxes de tiendas (normalmente en 3 columnas) pasan a
+           una sola columna en el celular, para que no queden apretados */
+        div[data-testid="column"] {
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+        /* Métricas (Solicitado/Tenido/Falta/Devuelto) un poco más chicas
+           para que quepan sin desbordarse en pantallas angostas */
+        div[data-testid="stMetricValue"] {
+            font-size: 1.6rem !important;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 0.85rem !important;
+        }
+        /* Inputs y botones ocupan todo el ancho disponible */
+        div[data-testid="stForm"] input {
+            font-size: 1.4rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -201,7 +241,19 @@ with tab2:
 
         week_sel = st.selectbox("Semana", weeks, key="val_week")
         tiendas = db.list_tiendas(conn, week_sel)
-        tienda_labels = {f"{t} - {n}": t for t, n in tiendas}
+
+        # Excluimos las tiendas que ya tienen una validación cerrada para esta
+        # semana, para que el operario no vuelva a elegir por error una tienda
+        # que ya se cerró.
+        historial_semana = db.get_historial(conn, week_tag=week_sel)
+        tiendas_cerradas = {str(h[1]) for h in historial_semana}
+        tiendas_pendientes = [(t, n) for t, n in tiendas if str(t) not in tiendas_cerradas]
+
+        if not tiendas_pendientes:
+            st.success("Todas las tiendas de esta semana ya tienen su validación cerrada. 🎉")
+            st.stop()
+
+        tienda_labels = {f"{t} - {n}": t for t, n in tiendas_pendientes}
         tienda_label_sel = st.selectbox("Tienda", list(tienda_labels.keys()), key="val_tienda")
         tienda_sel = tienda_labels[tienda_label_sel]
 
@@ -280,7 +332,7 @@ with tab2:
             elif resultado["estado"] == "excedente":
                 resultado_box.warning(
                     f"⚠️ El código **{codigo_limpio}** ya alcanzó la cantidad solicitada "
-                    f"({resultado['solicitado']}). Esta unidad se registra como **devolución**."
+                    f"({resultado['solicitado']}). Esta unidad se registra como **excedente**."
                 )
             else:
                 resultado_box.success(
@@ -311,12 +363,15 @@ with tab2:
         if not resumen_df.empty:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Solicitado", int(resumen_df["solicitado"].sum()))
-            c2.metric("Tenido", int(resumen_df["tenido"].sum()))
+            c2.metric("Validado", int(resumen_df["tenido"].sum()))
             c3.metric("Falta", int(resumen_df["falta"].sum()))
-            c4.metric("Devuelto", int(resumen_df["devuelto"].sum()))
+            c4.metric("Excedente", int(resumen_df["devuelto"].sum()))
 
             with st.expander("Ver detalle por código", expanded=False):
-                st.dataframe(resumen_df, use_container_width=True)
+                resumen_df_display = resumen_df.rename(
+                    columns={"tenido": "validado", "devuelto": "excedente"}
+                )
+                st.dataframe(resumen_df_display, use_container_width=True)
 
             st.markdown("")
             if st.button("🔒 Cerrar validación y guardar en historial", type="primary"):
@@ -350,7 +405,7 @@ with tab3:
             hist,
             columns=[
                 "week_tag", "tienda", "fecha_cierre",
-                "solicitado_total", "tenido_total", "faltante_total", "devuelto_total",
+                "solicitado_total", "validado_total", "faltante_total", "excedente_total",
             ],
         )
         st.dataframe(hist_df, use_container_width=True)
@@ -361,7 +416,7 @@ with tab3:
     st.markdown("#### Reporte descargable (solicitado + validación por tienda)")
     st.caption(
         "Genera un Excel con una pestaña RESUMEN (por tienda: cantidad de códigos, "
-        "solicitado, tenido, falta y devuelto según la última validación cerrada) y una "
+        "solicitado, validado, falta y excedente según la última validación cerrada) y una "
         "pestaña de DETALLE con el pedido consolidado, igual que tu reporte de referencia."
     )
 
