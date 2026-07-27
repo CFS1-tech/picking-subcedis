@@ -20,6 +20,11 @@ st.set_page_config(page_title="Picking Subcedis", layout="wide")
 st.markdown(
     """
     <style>
+    /* Menos espacio arriba, en toda pantalla (no solo celular), para que el
+       título y el validador queden más arriba y se aproveche mejor la pantalla. */
+    .block-container {
+        padding-top: 1.5rem !important;
+    }
     div[data-testid="stForm"] input {
         font-size: 1.6rem !important;
         padding: 0.9rem !important;
