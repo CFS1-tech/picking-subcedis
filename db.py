@@ -2,8 +2,16 @@
 import sqlite3
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "picking.db")
+TZ_PERU = ZoneInfo("America/Lima")
+
+
+def _ahora():
+    """Hora actual en zona horaria de Peru (los servidores de Streamlit Cloud
+    corren en UTC, asi que sin esto el historial mostraria la hora adelantada)."""
+    return datetime.now(TZ_PERU)
 
 
 def get_conn():
@@ -115,7 +123,7 @@ def replace_pedido(conn, week_tag, df):
     cur = conn.cursor()
     cur.execute("DELETE FROM pedido_items WHERE week_tag = ?", (week_tag,))
     cur.execute("DELETE FROM scans WHERE week_tag = ?", (week_tag,))
-    now = datetime.now().isoformat(timespec="seconds")
+    now = _ahora().isoformat(timespec="seconds")
     for _, row in df.iterrows():
         cur.execute(
             """INSERT INTO pedido_items
@@ -191,7 +199,7 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         nuevo_escaneado = escaneado_prev + 1
         nuevo_devuelto = devuelto_prev
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = _ahora().isoformat(timespec="seconds")
     if pertenece:
         cur.execute(
             """INSERT INTO scans (week_tag, tienda, codigo, cantidad_escaneada, cantidad_devuelta, ultima_actualizacion)
@@ -227,7 +235,7 @@ def guardar_historial(conn, week_tag, tienda, resumen_rows):
         (
             week_tag,
             tienda,
-            datetime.now().isoformat(timespec="seconds"),
+            _ahora().isoformat(timespec="seconds"),
             solicitado_total,
             tenido_total,
             faltante_total,

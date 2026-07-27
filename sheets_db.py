@@ -15,9 +15,18 @@ tenga que cambiar su lógica, solo el import.
 """
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import gspread
 import pandas as pd
+
+TZ_PERU = ZoneInfo("America/Lima")
+
+
+def _ahora():
+    """Hora actual en zona horaria de Peru (los servidores de Streamlit Cloud
+    corren en UTC, asi que sin esto el historial mostraria la hora adelantada)."""
+    return datetime.now(TZ_PERU)
 import streamlit as st
 from google.oauth2.credentials import Credentials
 from openpyxl.utils import get_column_letter
@@ -163,7 +172,7 @@ def replace_pedido(conn, week_tag, df):
     if not current.empty:
         current = current[current["week_tag"].astype(str) != str(week_tag)]
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = _ahora().isoformat(timespec="seconds")
     new_rows = df.copy()
     new_rows["week_tag"] = week_tag
     new_rows["fecha_carga"] = now
@@ -310,7 +319,7 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         nuevo_escaneado = escaneado_prev + 1
         nuevo_devuelto = devuelto_prev
 
-    now = datetime.now().isoformat(timespec="seconds")
+    now = _ahora().isoformat(timespec="seconds")
 
     if row_number is not None:
         ws.update(
@@ -354,7 +363,7 @@ def guardar_historial(conn, week_tag, tienda, resumen_rows):
         [
             week_tag,
             tienda,
-            datetime.now().isoformat(timespec="seconds"),
+            _ahora().isoformat(timespec="seconds"),
             solicitado_total,
             tenido_total,
             faltante_total,
