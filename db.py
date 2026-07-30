@@ -221,6 +221,33 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
     }
 
 
+def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
+    """Revierte el ÚLTIMO escaneo registrado de un código: si fue 'ok' resta 1
+    a la cantidad escaneada (validada), si fue 'excedente' resta 1 a la
+    cantidad devuelta (excedente). No borra el código, solo ajusta el conteo."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT cantidad_escaneada, cantidad_devuelta FROM scans WHERE week_tag=? AND tienda=? AND codigo=?",
+        (week_tag, tienda, codigo),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"escaneado_total": 0, "devuelto_total": 0}
+    escaneado, devuelto = row
+    if tipo == "excedente":
+        devuelto = max(devuelto - 1, 0)
+    else:
+        escaneado = max(escaneado - 1, 0)
+    now = _ahora().isoformat(timespec="seconds")
+    cur.execute(
+        """UPDATE scans SET cantidad_escaneada=?, cantidad_devuelta=?, ultima_actualizacion=?
+           WHERE week_tag=? AND tienda=? AND codigo=?""",
+        (escaneado, devuelto, now, week_tag, tienda, codigo),
+    )
+    conn.commit()
+    return {"escaneado_total": escaneado, "devuelto_total": devuelto}
+
+
 def guardar_historial(conn, week_tag, tienda, resumen_rows):
     import json
 

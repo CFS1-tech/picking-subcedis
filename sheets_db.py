@@ -380,6 +380,34 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
     }
 
 
+def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
+    """Revierte el ÚLTIMO escaneo registrado de un código: si fue 'ok' resta 1
+    a la cantidad escaneada (validada), si fue 'excedente' resta 1 a la
+    cantidad devuelta (excedente). Requiere prev_state (con 'row') para poder
+    actualizar directamente esa fila sin releer toda la hoja."""
+    ws = conn.worksheet("scans")
+    if not prev_state or prev_state.get("row") is None:
+        return {"escaneado_total": 0, "devuelto_total": 0}
+
+    escaneado = prev_state.get("escaneado", 0)
+    devuelto = prev_state.get("devuelto", 0)
+    row_number = prev_state["row"]
+
+    if tipo == "excedente":
+        devuelto = max(devuelto - 1, 0)
+    else:
+        escaneado = max(escaneado - 1, 0)
+
+    now = _ahora().isoformat(timespec="seconds")
+    ws.update(
+        f"A{row_number}:F{row_number}",
+        [[week_tag, tienda, codigo, escaneado, devuelto, now]],
+        value_input_option="RAW",
+    )
+
+    return {"escaneado_total": escaneado, "devuelto_total": devuelto}
+
+
 # ------------------------------------------------------------------
 # historial
 # ------------------------------------------------------------------

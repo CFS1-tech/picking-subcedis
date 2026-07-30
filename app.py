@@ -1,6 +1,6 @@
 """
 App de Picking / Validacion para Subcedis
-Tabs:
+Secciones (navegación en el panel izquierdo):
  1. Cargar pedido -> consolidado + CSV para WMS
  2. Validacion (escaneo por tienda)
  3. Historial
@@ -21,7 +21,7 @@ st.markdown(
     """
     <style>
     /* Menos espacio arriba, en toda pantalla (no solo celular), para que el
-       título y el validador queden más arriba y se aproveche mejor la pantalla. */
+       contenido quede más arriba y se aproveche mejor la pantalla. */
     .block-container {
         padding-top: 1.5rem !important;
     }
@@ -29,6 +29,8 @@ st.markdown(
         font-size: 1.6rem !important;
         padding: 0.9rem !important;
         text-align: center;
+        background-color: #eaf3ff !important;
+        border: 2px solid #0f2f5c !important;
     }
     div[data-testid="stForm"] button {
         font-size: 1.3rem !important;
@@ -38,53 +40,61 @@ st.markdown(
     div[data-testid="stMetricValue"] {
         font-size: 2.1rem !important;
     }
+    /* Franja de la tienda activa: angosta, ocupa poco alto */
     .tienda-activa-header {
         background-color: #0f2f5c;
         color: white;
-        padding: 1rem 1.4rem;
-        border-radius: 10px;
-        margin-bottom: 1rem;
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.8rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
     }
-    .tienda-activa-header h2 {
+    .tienda-activa-header h3 {
         color: white;
         margin: 0;
+        font-size: 1.15rem;
+    }
+    .tienda-activa-header span {
+        font-size: 0.85rem;
+        opacity: 0.85;
+    }
+    /* Botones de navegación en el panel izquierdo, ancho completo */
+    section[data-testid="stSidebar"] button {
+        width: 100%;
+        text-align: left;
+    }
+    /* Fila de "últimos escaneados": un poco más compacta */
+    .ultimo-escaneo-row {
+        padding: 0.35rem 0;
+        border-bottom: 1px solid #eee;
     }
 
     /* ---------- Ajustes para celular (pantallas angostas) ---------- */
     @media (max-width: 640px) {
-        /* Menos aire alrededor del contenido, aprovecha mejor la pantalla */
         .block-container {
             padding-top: 1.2rem !important;
             padding-left: 0.8rem !important;
             padding-right: 0.8rem !important;
         }
-        /* Título principal más chico para que no ocupe media pantalla */
         h1 {
             font-size: 1.6rem !important;
         }
-        h2, .tienda-activa-header h2 {
-            font-size: 1.3rem !important;
+        h2, h3, .tienda-activa-header h3 {
+            font-size: 1.1rem !important;
         }
-        /* Pestañas más grandes y fáciles de tocar con el dedo */
-        button[data-baseweb="tab"] {
-            font-size: 1rem !important;
-            padding: 0.6rem 0.5rem !important;
-        }
-        /* Los checkboxes de tiendas (normalmente en 3 columnas) pasan a
-           una sola columna en el celular, para que no queden apretados */
         div[data-testid="column"] {
             min-width: 100% !important;
             flex: 1 1 100% !important;
         }
-        /* Métricas (Solicitado/Tenido/Falta/Devuelto) un poco más chicas
-           para que quepan sin desbordarse en pantallas angostas */
         div[data-testid="stMetricValue"] {
             font-size: 1.6rem !important;
         }
         div[data-testid="stMetricLabel"] {
             font-size: 0.85rem !important;
         }
-        /* Inputs y botones ocupan todo el ancho disponible */
         div[data-testid="stForm"] input {
             font-size: 1.4rem !important;
         }
@@ -105,14 +115,128 @@ else:
 
 conn = db.init_db()
 
-st.title("Picking Subcedis")
 
-tab1, tab2, tab3 = st.tabs(["1. Cargar pedido", "2. Validacion (escaneo)", "3. Historial"])
+def _hay_validacion_sin_guardar():
+    """True si hay una validación en curso (tienda activa en la sección 2) con
+    al menos un escaneo registrado que todavía no se ha cerrado/guardado en
+    el historial. Se usa para bloquear el acceso a otras secciones y evitar
+    que se pierda de vista una validación a medio hacer."""
+    if not st.session_state.get("escaneo_activo"):
+        return False
+    if st.session_state.get("escaneo_guardado"):
+        return False
+    week = st.session_state.get("escaneo_week")
+    tienda = st.session_state.get("escaneo_tienda")
+    if not week or not tienda:
+        return False
+    cache_key = f"scans_cache_{week}_{tienda}"
+    scans_map = st.session_state.get(cache_key, {})
+    return any(
+        (v.get("escaneado", 0) or 0) > 0 or (v.get("devuelto", 0) or 0) > 0
+        for v in scans_map.values()
+    )
+
+
+def _guardar_validacion_actual():
+    """Cierra y guarda en el historial la validación de la tienda actualmente
+    activa en la sección 2, usando lo que haya en el cache de escaneos."""
+    week_sel = st.session_state.get("escaneo_week")
+    tienda_sel = st.session_state.get("escaneo_tienda")
+    if not week_sel or not tienda_sel:
+        return
+    solicitado_map = db.get_pedido_tienda(conn, week_sel, tienda_sel)
+    cache_key = f"scans_cache_{week_sel}_{tienda_sel}"
+    scans_map = st.session_state.get(cache_key, {})
+    resumen_rows = []
+    for codigo, solicitado in solicitado_map.items():
+        escaneado = scans_map.get(codigo, {}).get("escaneado", 0)
+        devuelto = scans_map.get(codigo, {}).get("devuelto", 0)
+        resumen_rows.append(
+            {
+                "codigo": codigo,
+                "solicitado": solicitado,
+                "tenido": escaneado,
+                "falta": max(solicitado - escaneado, 0),
+                "devuelto": devuelto,
+            }
+        )
+    db.guardar_historial(conn, week_sel, tienda_sel, resumen_rows)
+    st.session_state["escaneo_guardado"] = True
+
+
+hay_validacion_sin_guardar = _hay_validacion_sin_guardar()
 
 # ------------------------------------------------------------------
-# TAB 1: Cargar pedido y generar CSV para WMS
+# Navegación en el panel izquierdo (reemplaza las pestañas de arriba,
+# para no ocupar espacio horizontal en la sección activa)
 # ------------------------------------------------------------------
-with tab1:
+if "seccion_activa" not in st.session_state:
+    st.session_state["seccion_activa"] = "2" if st.session_state.get("escaneo_activo") else "1"
+
+st.sidebar.title("Picking Subcedis")
+
+SECCIONES = [
+    ("1", "1. Cargar pedido"),
+    ("2", "2. Validación (escaneo)"),
+    ("3", "3. Historial"),
+]
+
+for clave, etiqueta in SECCIONES:
+    es_activa = st.session_state["seccion_activa"] == clave
+    if st.sidebar.button(
+        etiqueta,
+        key=f"nav_{clave}",
+        type="primary" if es_activa else "secondary",
+        use_container_width=True,
+    ):
+        if clave != "2" and hay_validacion_sin_guardar:
+            st.session_state["confirmar_cambio_seccion"] = clave
+        else:
+            st.session_state["seccion_activa"] = clave
+        st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Persistencia activa: **{PERSISTENCIA}**")
+if PERSISTENCIA == "SQLite local":
+    st.sidebar.caption(
+        "⚠️ No se detectaron credenciales de Google Sheets en `st.secrets['gcp_oauth']`. "
+        "La app está usando SQLite local, que puede reiniciarse en Streamlit Cloud. "
+        "Configura las credenciales (ver README.md) para guardar todo permanentemente en tu Google Sheet."
+    )
+
+seccion_activa = st.session_state["seccion_activa"]
+
+# ------------------------------------------------------------------
+# Confirmación al intentar cambiar de sección con escaneos sin guardar
+# ------------------------------------------------------------------
+if st.session_state.get("confirmar_cambio_seccion"):
+    destino = st.session_state["confirmar_cambio_seccion"]
+    tienda_nombre_actual = st.session_state.get("escaneo_tienda_nombre", "")
+    st.warning(
+        f"⚠️ Tienes escaneos en **{tienda_nombre_actual}** que todavía no se han "
+        "guardado en el historial. ¿Qué deseas hacer antes de cambiar de sección?"
+    )
+    cconf1, cconf2, cconf3 = st.columns(3)
+    with cconf1:
+        if st.button("🔒 Guardar y continuar", type="primary", key="conf_sec_guardar"):
+            _guardar_validacion_actual()
+            st.session_state["seccion_activa"] = destino
+            st.session_state["confirmar_cambio_seccion"] = None
+            st.rerun()
+    with cconf2:
+        if st.button("⚠️ Continuar sin guardar", key="conf_sec_salir"):
+            st.session_state["seccion_activa"] = destino
+            st.session_state["confirmar_cambio_seccion"] = None
+            st.rerun()
+    with cconf3:
+        if st.button("Cancelar", key="conf_sec_cancelar"):
+            st.session_state["confirmar_cambio_seccion"] = None
+            st.rerun()
+
+# ------------------------------------------------------------------
+# SECCIÓN 1: Cargar pedido y generar CSV para WMS
+# ------------------------------------------------------------------
+elif seccion_activa == "1":
     st.subheader("Cargar pedido (Excel)")
     st.caption(
         "Sube el archivo de Picking Subcedis. La app detecta automaticamente la hoja "
@@ -154,7 +278,7 @@ with tab1:
                 # limpia el cache de escaneos en sesión de esta semana (el pedido
                 # se reemplazó, así que los escaneos previos ya no aplican)
                 for key in list(st.session_state.keys()):
-                    if key.startswith(f"scans_cache_{week_tag}_"):
+                    if key.startswith(f"scans_cache_{week_tag}_") or key.startswith(f"log_scans_{week_tag}_"):
                         del st.session_state[key]
                 st.session_state["pedido_guardado_week"] = week_tag
                 st.session_state["pedido_guardado_consolidado"] = consolidado
@@ -230,16 +354,16 @@ with tab1:
                     )
 
 # ------------------------------------------------------------------
-# TAB 2: Validacion por escaneo — en dos fases:
+# SECCIÓN 2: Validacion por escaneo — en dos fases:
 #   Fase 1: elegir semana y tienda
 #   Fase 2: pantalla dedicada de escaneo (grande, clara, para el operario)
 # ------------------------------------------------------------------
-with tab2:
+elif seccion_activa == "2":
     weeks = db.list_week_tags(conn)
 
     if not weeks:
         st.subheader("Validacion de picking por escaneo")
-        st.info("Primero carga un pedido en la pestaña 1.")
+        st.info("Primero carga un pedido en la sección 1.")
 
     elif not st.session_state.get("escaneo_activo"):
         # -------------------- FASE 1: selección --------------------
@@ -268,6 +392,8 @@ with tab2:
                 st.session_state["escaneo_week"] = week_sel
                 st.session_state["escaneo_tienda"] = tienda_sel
                 st.session_state["escaneo_tienda_nombre"] = tienda_label_sel
+                st.session_state["escaneo_guardado"] = False
+                st.session_state["confirmar_salida"] = False
                 st.rerun()
 
     else:
@@ -280,132 +406,224 @@ with tab2:
         with header_col:
             st.markdown(
                 f"""<div class="tienda-activa-header">
-                        <h2>📦 {tienda_nombre}</h2>
+                        <h3>📦 {tienda_nombre}</h3>
                         <span>Semana {week_sel}</span>
                     </div>""",
                 unsafe_allow_html=True,
             )
         with salir_col:
             if st.button("⬅ Cambiar tienda"):
-                st.session_state["escaneo_activo"] = False
+                if hay_validacion_sin_guardar:
+                    st.session_state["confirmar_salida"] = True
+                else:
+                    st.session_state["escaneo_activo"] = False
                 st.rerun()
 
-        solicitado_map = db.get_pedido_tienda(conn, week_sel, tienda_sel)
-
-        # Cache en sesión de los escaneos de esta tienda/semana: se carga UNA
-        # vez desde la hoja y luego se actualiza en memoria con cada escaneo,
-        # sin releer toda la hoja de Google Sheets en cada rerun (eso es lo
-        # que agotaba la cuota de la API al escanear varios códigos seguidos).
-        cache_key = f"scans_cache_{week_sel}_{tienda_sel}"
-        if cache_key not in st.session_state:
-            st.session_state[cache_key] = db.get_scans_tienda(conn, week_sel, tienda_sel)
-        scans_map = st.session_state[cache_key]
-
-        with st.form("scan_form", clear_on_submit=True):
-            codigo_input = st.text_input(
-                "Escanea el código",
-                key="scan_input",
-                placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
-                label_visibility="visible",
+        if st.session_state.get("confirmar_salida"):
+            st.warning(
+                "⚠️ Tienes escaneos registrados en **" + tienda_nombre + "** que todavía "
+                "no se han guardado en el historial. ¿Qué deseas hacer?"
             )
-            submitted = st.form_submit_button("✅ Registrar escaneo")
+            cconf1, cconf2, cconf3 = st.columns(3)
+            with cconf1:
+                if st.button("🔒 Guardar y cambiar tienda", type="primary"):
+                    _guardar_validacion_actual()
+                    st.session_state["escaneo_activo"] = False
+                    st.session_state["confirmar_salida"] = False
+                    st.rerun()
+            with cconf2:
+                if st.button("⚠️ Salir sin guardar"):
+                    st.session_state["escaneo_activo"] = False
+                    st.session_state["confirmar_salida"] = False
+                    st.rerun()
+            with cconf3:
+                if st.button("Cancelar"):
+                    st.session_state["confirmar_salida"] = False
+                    st.rerun()
 
-        resultado_box = st.empty()
+        if not st.session_state.get("confirmar_salida"):
+            solicitado_map = db.get_pedido_tienda(conn, week_sel, tienda_sel)
 
-        if submitted and codigo_input:
-            # El lector escanea el código tal como viene en la etiqueta (con punto,
-            # ej. 150079.001). El pedido consolidado lo guarda sin punto, así que
-            # aplicamos la misma limpieza usada al armar el consolidado para que
-            # crucen exactamente. Todo se trata como texto (nunca como número),
-            # por lo que ceros finales tipo .010 o .1140 no se pierden ni se redondean.
-            codigo_limpio = pk.quitar_punto(codigo_input.strip())
-            prev_state = scans_map.get(codigo_limpio)
-            resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map, prev_state)
+            # Cache en sesión de los escaneos de esta tienda/semana: se carga UNA
+            # vez desde la hoja y luego se actualiza en memoria con cada escaneo,
+            # sin releer toda la hoja de Google Sheets en cada rerun (eso es lo
+            # que agotaba la cuota de la API al escanear varios códigos seguidos).
+            cache_key = f"scans_cache_{week_sel}_{tienda_sel}"
+            if cache_key not in st.session_state:
+                st.session_state[cache_key] = db.get_scans_tienda(conn, week_sel, tienda_sel)
+            scans_map = st.session_state[cache_key]
 
-            if resultado["estado"] != "no_pertenece":
-                # actualizamos el cache en memoria, sin releer la hoja
-                scans_map[codigo_limpio] = {
-                    "escaneado": resultado["escaneado_total"],
-                    "devuelto": resultado["devuelto_total"],
-                    "row": resultado["row"],
-                }
-                st.session_state[cache_key] = scans_map
+            # Log en sesión de los últimos escaneos (código + tipo), para el
+            # resumen de "últimos escaneados" y para poder deshacerlos.
+            log_key = f"log_scans_{cache_key}"
+            if log_key not in st.session_state:
+                st.session_state[log_key] = []
+            log_scans = st.session_state[log_key]
 
-            if resultado["estado"] == "no_pertenece":
-                resultado_box.error(
-                    f"❌ El código **{codigo_limpio}** NO pertenece al pedido de esta tienda."
+            # Reservamos aquí arriba el espacio visual de las métricas (van
+            # justo debajo de la cabecera de tienda), pero las llenamos MÁS
+            # ABAJO en el código, después de procesar el escaneo de este run,
+            # para que el número se actualice sin esperar un rerun adicional.
+            metricas_placeholder = st.container()
+
+            with st.form("scan_form", clear_on_submit=True):
+                codigo_input = st.text_input(
+                    "Escanea el código",
+                    key="scan_input",
+                    placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
+                    label_visibility="visible",
                 )
-            elif resultado["estado"] == "excedente":
-                resultado_box.warning(
-                    f"⚠️ El código **{codigo_limpio}** ya alcanzó la cantidad solicitada "
-                    f"({resultado['solicitado']}). Esta unidad se registra como **excedente**."
-                )
+                submitted = st.form_submit_button("✅ Registrar escaneo")
+
+            resultado_box = st.empty()
+
+            if submitted and codigo_input:
+                # El lector escanea el código tal como viene en la etiqueta (con punto,
+                # ej. 150079.001). El pedido consolidado lo guarda sin punto, así que
+                # aplicamos la misma limpieza usada al armar el consolidado para que
+                # crucen exactamente. Todo se trata como texto (nunca como número),
+                # por lo que ceros finales tipo .010 o .1140 no se pierden ni se redondean.
+                codigo_limpio = pk.quitar_punto(codigo_input.strip())
+                prev_state = scans_map.get(codigo_limpio)
+                resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map, prev_state)
+
+                if resultado["estado"] != "no_pertenece":
+                    # actualizamos el cache en memoria, sin releer la hoja
+                    scans_map[codigo_limpio] = {
+                        "escaneado": resultado["escaneado_total"],
+                        "devuelto": resultado["devuelto_total"],
+                        "row": resultado["row"],
+                    }
+                    st.session_state[cache_key] = scans_map
+
+                    log_scans.append(
+                        {
+                            "codigo": codigo_limpio,
+                            "tipo": resultado["estado"],
+                            "hora": datetime.now().strftime("%H:%M:%S"),
+                        }
+                    )
+                    st.session_state[log_key] = log_scans
+
+                if resultado["estado"] == "no_pertenece":
+                    resultado_box.error(
+                        f"❌ El código **{codigo_limpio}** NO pertenece al pedido de esta tienda."
+                    )
+                elif resultado["estado"] == "excedente":
+                    resultado_box.warning(
+                        f"⚠️ El código **{codigo_limpio}** ya alcanzó la cantidad solicitada "
+                        f"({resultado['solicitado']}). Esta unidad se registra como **excedente**."
+                    )
+                else:
+                    def _fmt(n):
+                        return int(n) if float(n).is_integer() else n
+
+                    resultado_box.success(
+                        f"✅ OK — {codigo_limpio}: {_fmt(resultado['escaneado_total'])} / {_fmt(resultado['solicitado'])}"
+                    )
+
+            # -------- Resumen de los últimos 5 escaneados (con deshacer) --------
+            st.markdown("#### Últimos escaneados")
+            if not log_scans:
+                st.caption("Aún no has escaneado nada en esta sesión.")
             else:
-                def _fmt(n):
-                    return int(n) if float(n).is_integer() else n
+                indices_recientes = list(range(len(log_scans)))[-5:]
+                indices_recientes.reverse()
+                for idx in indices_recientes:
+                    entry = log_scans[idx]
+                    codigo_e = entry["codigo"]
+                    solicitado_e = solicitado_map.get(codigo_e, 0)
+                    escaneado_e = scans_map.get(codigo_e, {}).get("escaneado", 0)
+                    devuelto_e = scans_map.get(codigo_e, {}).get("devuelto", 0)
+                    hay_exceso = devuelto_e and devuelto_e > 0
 
-                resultado_box.success(
-                    f"✅ OK — {codigo_limpio}: {_fmt(resultado['escaneado_total'])} / {_fmt(resultado['solicitado'])}"
+                    ec1, ec2, ec3 = st.columns([3, 3, 1])
+                    with ec1:
+                        icono = "⚠️" if hay_exceso else "✅"
+                        st.markdown(f"{icono} **{codigo_e}**  ·  {entry['hora']}")
+                    with ec2:
+                        texto_cant = f"{int(escaneado_e)} / {int(solicitado_e) if solicitado_e else 0}"
+                        if hay_exceso:
+                            texto_cant += f"  (+{int(devuelto_e)} excedente)"
+                        st.markdown(texto_cant)
+                    with ec3:
+                        if st.button("↩ Deshacer", key=f"undo_{cache_key}_{idx}"):
+                            prev = scans_map.get(codigo_e)
+                            resultado_undo = db.deshacer_scan(
+                                conn, week_sel, tienda_sel, codigo_e, entry["tipo"], prev
+                            )
+                            scans_map[codigo_e] = {
+                                "escaneado": resultado_undo["escaneado_total"],
+                                "devuelto": resultado_undo["devuelto_total"],
+                                "row": prev.get("row") if prev else None,
+                            }
+                            st.session_state[cache_key] = scans_map
+                            log_scans.pop(idx)
+                            st.session_state[log_key] = log_scans
+                            st.rerun()
+
+            resumen_rows = []
+            for codigo, solicitado in solicitado_map.items():
+                escaneado = scans_map.get(codigo, {}).get("escaneado", 0)
+                devuelto = scans_map.get(codigo, {}).get("devuelto", 0)
+                falta = max(solicitado - escaneado, 0)
+                resumen_rows.append(
+                    {
+                        "codigo": codigo,
+                        "solicitado": solicitado,
+                        "tenido": escaneado,
+                        "falta": falta,
+                        "devuelto": devuelto,
+                    }
                 )
 
-        st.markdown("#### Resumen en vivo")
+            # códigos escaneados que no pertenecen al pedido no se guardan (no_pertenece),
+            # así que no aparecen aquí — es intencional según la validación pedida.
 
-        resumen_rows = []
-        for codigo, solicitado in solicitado_map.items():
-            escaneado = scans_map.get(codigo, {}).get("escaneado", 0)
-            devuelto = scans_map.get(codigo, {}).get("devuelto", 0)
-            falta = max(solicitado - escaneado, 0)
-            resumen_rows.append(
-                {
-                    "codigo": codigo,
-                    "solicitado": solicitado,
-                    "tenido": escaneado,
-                    "falta": falta,
-                    "devuelto": devuelto,
-                }
-            )
+            resumen_df = pd.DataFrame(resumen_rows)
 
-        # códigos escaneados que no pertenecen al pedido no se guardan (no_pertenece),
-        # así que no aparecen aquí — es intencional según la validación pedida.
+            # Llenamos ahora el espacio de métricas reservado arriba, con los
+            # datos ya actualizados de este mismo run.
+            with metricas_placeholder:
+                if not resumen_df.empty:
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Solicitado", int(resumen_df["solicitado"].sum()))
+                    c2.metric("Validado", int(resumen_df["tenido"].sum()))
+                    c3.metric("Falta", int(resumen_df["falta"].sum()))
+                    c4.metric("Excedente", int(resumen_df["devuelto"].sum()))
 
-        resumen_df = pd.DataFrame(resumen_rows)
-        if not resumen_df.empty:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Solicitado", int(resumen_df["solicitado"].sum()))
-            c2.metric("Validado", int(resumen_df["tenido"].sum()))
-            c3.metric("Falta", int(resumen_df["falta"].sum()))
-            c4.metric("Excedente", int(resumen_df["devuelto"].sum()))
+            if not resumen_df.empty:
+                with st.expander("Ver detalle por código", expanded=False):
+                    resumen_df_display = resumen_df.rename(
+                        columns={"tenido": "validado", "devuelto": "excedente"}
+                    )
+                    for col in ["solicitado", "validado", "falta", "excedente"]:
+                        resumen_df_display[col] = resumen_df_display[col].astype(int)
+                    resumen_df_display.index = range(1, len(resumen_df_display) + 1)
 
-            with st.expander("Ver detalle por código", expanded=False):
-                resumen_df_display = resumen_df.rename(
-                    columns={"tenido": "validado", "devuelto": "excedente"}
-                )
-                for col in ["solicitado", "validado", "falta", "excedente"]:
-                    resumen_df_display[col] = resumen_df_display[col].astype(int)
-                resumen_df_display.index = range(1, len(resumen_df_display) + 1)
+                    def _resaltar_faltantes(row):
+                        if row["falta"] and row["falta"] != 0:
+                            return ["background-color: #fdecea"] * len(row)
+                        return [""] * len(row)
 
-                def _resaltar_faltantes(row):
-                    if row["falta"] and row["falta"] != 0:
-                        return ["background-color: #fdecea"] * len(row)
-                    return [""] * len(row)
+                    st.dataframe(
+                        resumen_df_display.style.apply(_resaltar_faltantes, axis=1),
+                        use_container_width=True,
+                    )
 
-                st.dataframe(
-                    resumen_df_display.style.apply(_resaltar_faltantes, axis=1),
-                    use_container_width=True,
-                )
-
-            st.markdown("")
-            if st.button("🔒 Cerrar validación y guardar en historial", type="primary"):
-                db.guardar_historial(conn, week_sel, tienda_sel, resumen_rows)
-                st.success(f"Historial guardado para {tienda_nombre} — semana {week_sel}.")
-                st.balloons()
-        else:
-            st.info("No hay items en el pedido para esta tienda.")
+                st.markdown("")
+                if st.button("🔒 Cerrar validación y guardar en historial", type="primary"):
+                    db.guardar_historial(conn, week_sel, tienda_sel, resumen_rows)
+                    st.session_state["escaneo_guardado"] = True
+                    st.success(f"Historial guardado para {tienda_nombre} — semana {week_sel}.")
+                    st.balloons()
+            else:
+                st.info("No hay items en el pedido para esta tienda.")
 
 # ------------------------------------------------------------------
-# TAB 3: Historial
+# SECCIÓN 3: Historial
 # ------------------------------------------------------------------
-with tab3:
+elif seccion_activa == "3":
     st.subheader("Historial de validaciones")
 
     weeks = db.list_week_tags(conn)
@@ -432,7 +650,7 @@ with tab3:
         hist_df.index = range(1, len(hist_df) + 1)
         st.dataframe(hist_df, use_container_width=True)
     else:
-        st.info("Aún no hay historial guardado. Cierra una validación en la pestaña 2 para generar registros.")
+        st.info("Aún no hay historial guardado. Cierra una validación en la sección 2 para generar registros.")
 
     st.markdown("---")
     st.markdown("#### Reporte descargable (solicitado + validación por tienda)")
@@ -463,13 +681,4 @@ with tab3:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
     else:
-        st.info("Primero carga un pedido en la pestaña 1 para poder generar un reporte.")
-
-st.sidebar.markdown("---")
-st.sidebar.caption(f"Persistencia activa: **{PERSISTENCIA}**")
-if PERSISTENCIA == "SQLite local":
-    st.sidebar.caption(
-        "⚠️ No se detectaron credenciales de Google Sheets en `st.secrets['gcp_oauth']`. "
-        "La app está usando SQLite local, que puede reiniciarse en Streamlit Cloud. "
-        "Configura las credenciales (ver README.md) para guardar todo permanentemente en tu Google Sheet."
-    )
+        st.info("Primero carga un pedido en la sección 1 para poder generar un reporte.")
