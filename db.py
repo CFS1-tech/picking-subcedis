@@ -324,3 +324,10 @@ def get_ultimo_detalle_validacion_todas(conn, week_tag):
             continue
         resultado[tienda] = json.loads(detalle_json) if detalle_json else []
     return resultado
+
+
+def get_stock_descripciones():
+    """En modo SQLite local no hay acceso al Sheet externo de stock del
+    almacén (eso requiere las credenciales de Google de sheets_db.py), así
+    que el reporte simplemente queda sin descripciones en este modo."""
+    return {}

@@ -494,3 +494,43 @@ def get_ultimo_detalle_validacion_todas(conn, week_tag):
         detalle_json = row["detalle_json"]
         resultado[tienda] = json.loads(detalle_json) if detalle_json else []
     return resultado
+
+
+# ------------------------------------------------------------------
+# Cruce con el Sheet de stock del almacén (para traer la descripción del
+# producto al reporte). Es un archivo externo, compartido con la misma
+# cuenta de Google que usan las credenciales OAuth de la app.
+# ------------------------------------------------------------------
+STOCK_SHEET_ID = "1tELmHl02szJkXo0SmWXT0vd9bkliF3qskOuH0WsyQVA"
+STOCK_SHEET_TAB = "Hoja 1"
+STOCK_FAMILIA = "LA CARCASA MOVIL"
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_stock_descripciones():
+    """Devuelve un dict {codigo: descripcion} leyendo el Sheet de stock del
+    almacén, filtrado a la familia 'LA CARCASA MOVIL'. Se cachea 10 minutos
+    para no gastar cuota de la API en cada reporte generado."""
+    try:
+        client = _get_client()
+        sh = client.open_by_key(STOCK_SHEET_ID)
+        ws = sh.worksheet(STOCK_SHEET_TAB)
+        headers = ws.row_values(1)
+        # el código en este sheet ya viene sin punto, pero puede tener ceros
+        # a la izquierda, así que lo excluimos de la auto-conversión numérica.
+        idx_codigo = headers.index("Código") + 1 if "Código" in headers else None
+        values = ws.get_all_records(numericise_ignore=[idx_codigo] if idx_codigo else [])
+    except Exception:
+        # si el sheet de stock no está disponible por algún motivo, el
+        # reporte debe seguir funcionando igual (solo sin las descripciones).
+        return {}
+
+    resultado = {}
+    for row in values:
+        familia = str(row.get("Familia", "")).strip()
+        if familia != STOCK_FAMILIA:
+            continue
+        codigo = str(row.get("Código", "")).strip()
+        if codigo:
+            resultado[codigo] = row.get("Descripción", "")
+    return resultado

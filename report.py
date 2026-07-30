@@ -55,6 +55,11 @@ def generar_reporte(db, conn, week_tag):
     detalle_rows = []
     faltantes_rows = []
 
+    # Descripción del producto: se cruza por 'codigo' contra el Sheet de
+    # stock del almacén (familia 'LA CARCASA MOVIL'). Si no está disponible
+    # (ej. modo SQLite local, o el sheet externo falla), queda vacío.
+    descripciones = db.get_stock_descripciones() if hasattr(db, "get_stock_descripciones") else {}
+
     # Una sola lectura del historial completo de la semana (con detalle por
     # código), en vez de una lectura por tienda — evita agotar la cuota de
     # la API de Google Sheets cuando hay muchas tiendas.
@@ -62,15 +67,27 @@ def generar_reporte(db, conn, week_tag):
 
     for tienda, nombre in tiendas:
         pedido_map = db.get_pedido_tienda(conn, week_tag, tienda)
-        cuenta_codigos = len(pedido_map)
         suma_solicitada = sum(pedido_map.values())
 
         cierre = ultimo_cierre.get(str(tienda))
+
+        # Detalle de códigos efectivamente enviados (tenido > 0) en la
+        # última validación cerrada de esta tienda.
+        detalle_validacion = detalle_validacion_por_tienda.get(str(tienda))
+
+        # SKU únicos: en base a lo VALIDADO (códigos con tenido > 0 en la
+        # última validación cerrada), no en base al pedido original.
+        cuenta_codigos_validados = None
+        if cierre and detalle_validacion:
+            cuenta_codigos_validados = sum(
+                1 for item in detalle_validacion if (item.get("tenido", 0) or 0) > 0
+            )
+
         resumen_rows.append(
             {
                 "codigo_departamento": tienda,
                 "nombre_departamento": nombre,
-                "SKU unicos": cuenta_codigos,
+                "SKU unicos": cuenta_codigos_validados,
                 "Unidades Solicitadas": suma_solicitada,
                 "Unidades Validadas": cierre["tenido"] if cierre else None,
                 "Unidades Faltantes": cierre["falta"] if cierre else None,
@@ -79,9 +96,6 @@ def generar_reporte(db, conn, week_tag):
             }
         )
 
-        # Detalle de códigos efectivamente enviados (tenido > 0) en la
-        # última validación cerrada de esta tienda.
-        detalle_validacion = detalle_validacion_por_tienda.get(str(tienda))
         if not detalle_validacion:
             continue
 
@@ -103,6 +117,7 @@ def generar_reporte(db, conn, week_tag):
 
             cod = fila_base.get("cod", "") or ""
             color = fila_base.get("color", "") or ""
+            descripcion = descripciones.get(codigo, "")
 
             if tenido > 0:
                 cantidad_int = int(tenido) if float(tenido).is_integer() else tenido
@@ -119,6 +134,7 @@ def generar_reporte(db, conn, week_tag):
                         "nombre_departamento": nombre,
                         "codigo_color": fila_base.get("codigo_color", codigo),
                         "codigo": codigo,
+                        "descripcion": descripcion,
                         "unidades_picking": tenido,
                         "cabecera_original": fila_base.get("cabecera_original", ""),
                         "articulo_original": fila_base.get("articulo_original", ""),
@@ -137,6 +153,7 @@ def generar_reporte(db, conn, week_tag):
                         "nombre_departamento": nombre,
                         "codigo_color": fila_base.get("codigo_color", codigo),
                         "codigo": codigo,
+                        "descripcion": descripcion,
                         "unidades_faltantes": falta_item,
                         "cabecera_original": fila_base.get("cabecera_original", ""),
                         "articulo_original": fila_base.get("articulo_original", ""),
@@ -150,7 +167,7 @@ def generar_reporte(db, conn, week_tag):
         detalle_rows,
         columns=[
             "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
-            "codigo_color", "codigo", "unidades_picking",
+            "codigo_color", "codigo", "descripcion", "unidades_picking",
             "cabecera_original", "articulo_original", "cod", "color", "traspaso",
         ],
     )
@@ -158,7 +175,7 @@ def generar_reporte(db, conn, week_tag):
         faltantes_rows,
         columns=[
             "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
-            "codigo_color", "codigo", "unidades_faltantes",
+            "codigo_color", "codigo", "descripcion", "unidades_faltantes",
             "cabecera_original", "articulo_original", "cod", "color",
         ],
     )
@@ -168,7 +185,7 @@ def generar_reporte(db, conn, week_tag):
         totales = {
             "codigo_departamento": "Total general",
             "nombre_departamento": "",
-            "SKU unicos": resumen_df["SKU unicos"].sum(),
+            "SKU unicos": resumen_df["SKU unicos"].sum(skipna=True),
             "Unidades Solicitadas": resumen_df["Unidades Solicitadas"].sum(),
             "Unidades Validadas": resumen_df["Unidades Validadas"].sum(skipna=True),
             "Unidades Faltantes": resumen_df["Unidades Faltantes"].sum(skipna=True),
