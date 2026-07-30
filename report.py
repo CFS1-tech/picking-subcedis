@@ -53,6 +53,7 @@ def generar_reporte(db, conn, week_tag):
         )
 
     detalle_rows = []
+    faltantes_rows = []
 
     # Una sola lectura del historial completo de la semana (con detalle por
     # código), en vez de una lectura por tienda — evita agotar la cuota de
@@ -86,8 +87,7 @@ def generar_reporte(db, conn, week_tag):
 
         for item in detalle_validacion:
             tenido = item.get("tenido", 0) or 0
-            if tenido <= 0:
-                continue
+            falta_item = item.get("falta", 0) or 0
             codigo = str(item.get("codigo")).strip()
             fila_base = {}
             if not detalle_crudo.empty:
@@ -103,28 +103,47 @@ def generar_reporte(db, conn, week_tag):
 
             cod = fila_base.get("cod", "") or ""
             color = fila_base.get("color", "") or ""
-            cantidad_int = int(tenido) if float(tenido).is_integer() else tenido
-            # 'traspaso' se reconstruye con el mismo patrón que usa el sistema
-            # de origen (no viene en el archivo que subes, pero sigue un
-            # formato fijo: "Ubicado P2L;Reparto Salida;{cod};{color};{cantidad};NA")
-            traspaso = f"Ubicado P2L;Reparto Salida;{cod};{color};{cantidad_int};NA" if cod else ""
 
-            detalle_rows.append(
-                {
-                    "id_cabecera": fila_base.get("id_cabecera", ""),
-                    "id_linea": fila_base.get("id_linea", ""),
-                    "codigo_departamento": tienda,
-                    "nombre_departamento": nombre,
-                    "codigo_color": fila_base.get("codigo_color", codigo),
-                    "codigo": codigo,
-                    "unidades_picking": tenido,
-                    "cabecera_original": fila_base.get("cabecera_original", ""),
-                    "articulo_original": fila_base.get("articulo_original", ""),
-                    "cod": cod,
-                    "color": color,
-                    "traspaso": traspaso,
-                }
-            )
+            if tenido > 0:
+                cantidad_int = int(tenido) if float(tenido).is_integer() else tenido
+                # 'traspaso' se reconstruye con el mismo patrón que usa el sistema
+                # de origen (no viene en el archivo que subes, pero sigue un
+                # formato fijo: "Ubicado P2L;Reparto Salida;{cod};{color};{cantidad};NA")
+                traspaso = f"Ubicado P2L;Reparto Salida;{cod};{color};{cantidad_int};NA" if cod else ""
+
+                detalle_rows.append(
+                    {
+                        "id_cabecera": fila_base.get("id_cabecera", ""),
+                        "id_linea": fila_base.get("id_linea", ""),
+                        "codigo_departamento": tienda,
+                        "nombre_departamento": nombre,
+                        "codigo_color": fila_base.get("codigo_color", codigo),
+                        "codigo": codigo,
+                        "unidades_picking": tenido,
+                        "cabecera_original": fila_base.get("cabecera_original", ""),
+                        "articulo_original": fila_base.get("articulo_original", ""),
+                        "cod": cod,
+                        "color": color,
+                        "traspaso": traspaso,
+                    }
+                )
+
+            if falta_item > 0:
+                faltantes_rows.append(
+                    {
+                        "id_cabecera": fila_base.get("id_cabecera", ""),
+                        "id_linea": fila_base.get("id_linea", ""),
+                        "codigo_departamento": tienda,
+                        "nombre_departamento": nombre,
+                        "codigo_color": fila_base.get("codigo_color", codigo),
+                        "codigo": codigo,
+                        "unidades_faltantes": falta_item,
+                        "cabecera_original": fila_base.get("cabecera_original", ""),
+                        "articulo_original": fila_base.get("articulo_original", ""),
+                        "cod": cod,
+                        "color": color,
+                    }
+                )
 
     resumen_df = pd.DataFrame(resumen_rows)
     detalle_df = pd.DataFrame(
@@ -133,6 +152,14 @@ def generar_reporte(db, conn, week_tag):
             "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
             "codigo_color", "codigo", "unidades_picking",
             "cabecera_original", "articulo_original", "cod", "color", "traspaso",
+        ],
+    )
+    faltantes_df = pd.DataFrame(
+        faltantes_rows,
+        columns=[
+            "id_cabecera", "id_linea", "codigo_departamento", "nombre_departamento",
+            "codigo_color", "codigo", "unidades_faltantes",
+            "cabecera_original", "articulo_original", "cod", "color",
         ],
     )
 
@@ -157,15 +184,20 @@ def generar_reporte(db, conn, week_tag):
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         resumen_df.to_excel(writer, sheet_name="RESUMEN", index=False)
         detalle_df.to_excel(writer, sheet_name=f"Picking Subcedis {week_tag}", index=False)
+        faltantes_df.to_excel(writer, sheet_name="FALTANTES", index=False)
 
         header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
         header_font = Font(bold=True)
 
+        columnas_por_hoja = {
+            "RESUMEN": resumen_df.columns,
+            f"Picking Subcedis {week_tag}": detalle_df.columns,
+            "FALTANTES": faltantes_df.columns,
+        }
+
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
-            for col_idx, col_name in enumerate(
-                (resumen_df.columns if sheet_name == "RESUMEN" else detalle_df.columns), start=1
-            ):
+            for col_idx, col_name in enumerate(columnas_por_hoja[sheet_name], start=1):
                 cell = ws.cell(row=1, column=col_idx)
                 cell.font = header_font
                 cell.fill = header_fill

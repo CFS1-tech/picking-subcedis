@@ -55,11 +55,18 @@ st.markdown(
     .tienda-activa-header h3 {
         color: white;
         margin: 0;
-        font-size: 1.15rem;
+        font-size: 1.6rem;
     }
     .tienda-activa-header span {
-        font-size: 0.85rem;
+        font-size: 1rem;
         opacity: 0.85;
+    }
+    /* Botón "Cambiar tienda": que no se corte el texto */
+    div[data-testid="column"] button {
+        white-space: nowrap !important;
+        min-width: fit-content !important;
+        padding-left: 0.9rem !important;
+        padding-right: 0.9rem !important;
     }
     /* Botones de navegación en el panel izquierdo, ancho completo */
     section[data-testid="stSidebar"] button {
@@ -402,7 +409,7 @@ elif seccion_activa == "2":
         tienda_sel = st.session_state["escaneo_tienda"]
         tienda_nombre = st.session_state["escaneo_tienda_nombre"]
 
-        header_col, salir_col = st.columns([5, 1])
+        header_col, salir_col = st.columns([4, 1.3])
         with header_col:
             st.markdown(
                 f"""<div class="tienda-activa-header">
