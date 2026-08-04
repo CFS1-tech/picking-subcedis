@@ -501,7 +501,7 @@ def get_ultimo_detalle_validacion_todas(conn, week_tag):
 # producto al reporte). Es un archivo externo, compartido con la misma
 # cuenta de Google que usan las credenciales OAuth de la app.
 # ------------------------------------------------------------------
-STOCK_SHEET_ID = "18lDotTZikzg7oDDetshJwPdboGNRd4TmRL_eegT9tNs"
+STOCK_SHEET_ID = "1shWvQmLzdByHCmzPCoEBtgdKBsZIRSwcr12qOvCkD-8"
 STOCK_SHEET_TAB = "Hoja 1"
 STOCK_FAMILIA = "LA CARCASA MOVIL"
 
