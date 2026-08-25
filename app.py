@@ -7,12 +7,22 @@ Secciones (navegación en el panel izquierdo):
 """
 import io
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
 import parser as pk
 import report
+
+TZ_PERU = ZoneInfo("America/Lima")
+
+
+def _hora_actual():
+    """Hora actual en zona horaria de Peru (los servidores de Streamlit Cloud
+    corren en UTC, asi que sin esto el log de escaneos mostraria la hora
+    adelantada)."""
+    return datetime.now(TZ_PERU)
 
 st.set_page_config(page_title="Picking Subcedis", layout="wide")
 
@@ -475,19 +485,26 @@ elif seccion_activa == "2":
             metricas_placeholder = st.container()
 
             with st.form("scan_form", clear_on_submit=True):
-                codigo_input = st.text_input(
-                    "Escanea el código",
-                    key="scan_input",
-                    placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
-                    label_visibility="visible",
-                )
-                cantidad_input = st.number_input(
-                    "Cantidad (déjalo en 1 para escanear normal; súbelo si ya contaste "
-                    "físicamente varias unidades del mismo código)",
-                    min_value=1,
-                    value=1,
-                    step=1,
-                    key="scan_cantidad",
+                col_codigo, col_cantidad = st.columns([3, 1])
+                with col_codigo:
+                    codigo_input = st.text_input(
+                        "Escanea el código",
+                        key="scan_input",
+                        placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
+                        label_visibility="visible",
+                    )
+                with col_cantidad:
+                    cantidad_input = st.number_input(
+                        "Cantidad",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                        key="scan_cantidad",
+                    )
+                st.caption(
+                    "Si ya contaste varias unidades físicamente, primero pon la cantidad "
+                    "aquí y RECIÉN escanea el código (el escaneo manda el Enter que "
+                    "envía todo el formulario junto). Si dejas Cantidad en 1, escanea como siempre."
                 )
                 submitted = st.form_submit_button("✅ Registrar escaneo")
 
@@ -523,7 +540,7 @@ elif seccion_activa == "2":
                             "cantidad": cantidad_a_registrar,
                             "escaneado_delta": resultado.get("escaneado_delta", 0),
                             "devuelto_delta": resultado.get("devuelto_delta", 0),
-                            "hora": datetime.now().strftime("%H:%M:%S"),
+                            "hora": _hora_actual().strftime("%H:%M:%S"),
                         }
                     )
                     st.session_state[log_key] = log_scans
