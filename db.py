@@ -167,13 +167,19 @@ def get_scans_tienda(conn, week_tag, tienda):
     return {r[0]: {"escaneado": r[1], "devuelto": r[2]} for r in cur.fetchall()}
 
 
-def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None):
-    """Registra un escaneo. Devuelve dict con resultado de esta lectura.
+def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None, cantidad=1):
+    """Registra un escaneo (o una cantidad contada manualmente de una vez).
+    Devuelve dict con resultado de esta lectura.
+
+    cantidad: unidades a sumar en esta sola llamada (por defecto 1, como un
+    escaneo normal). Si escaneado_prev + cantidad supera lo solicitado, lo
+    que cabe se registra como validado y el resto como excedente.
 
     prev_state se ignora aquí (solo lo usa sheets_db.py para optimizar
     llamadas a la API de Google); en SQLite siempre se relee de la base,
     que es prácticamente instantánea al ser local.
     """
+    cantidad = max(int(cantidad), 1)
     cur = conn.cursor()
     cur.execute(
         "SELECT cantidad_escaneada, cantidad_devuelta FROM scans WHERE week_tag=? AND tienda=? AND codigo=?",
@@ -186,17 +192,31 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
     pertenece = codigo in solicitado_map
     solicitado = solicitado_map.get(codigo, 0)
 
+    escaneado_delta = 0
+    devuelto_delta = 0
+
     if not pertenece:
         estado = "no_pertenece"
         nuevo_escaneado = escaneado_prev
         nuevo_devuelto = devuelto_prev
-    elif escaneado_prev + 1 > solicitado:
+    elif escaneado_prev >= solicitado:
+        # ya estaba completo (o pasado): todo lo nuevo es excedente
         estado = "excedente"
-        nuevo_escaneado = escaneado_prev  # no sube el "tenido" util
-        nuevo_devuelto = devuelto_prev + 1
+        devuelto_delta = cantidad
+        nuevo_escaneado = escaneado_prev
+        nuevo_devuelto = devuelto_prev + cantidad
+    elif escaneado_prev + cantidad > solicitado:
+        # una parte cabe, el resto se pasa
+        estado = "excedente"
+        cabe = solicitado - escaneado_prev
+        escaneado_delta = cabe
+        devuelto_delta = cantidad - cabe
+        nuevo_escaneado = escaneado_prev + cabe
+        nuevo_devuelto = devuelto_prev + devuelto_delta
     else:
         estado = "ok"
-        nuevo_escaneado = escaneado_prev + 1
+        escaneado_delta = cantidad
+        nuevo_escaneado = escaneado_prev + cantidad
         nuevo_devuelto = devuelto_prev
 
     now = _ahora().isoformat(timespec="seconds")
@@ -217,14 +237,27 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         "solicitado": solicitado,
         "escaneado_total": nuevo_escaneado,
         "devuelto_total": nuevo_devuelto,
+        "escaneado_delta": escaneado_delta,
+        "devuelto_delta": devuelto_delta,
         "row": None,  # no aplica en SQLite, solo lo usa sheets_db.py
     }
 
 
-def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
-    """Revierte el ÚLTIMO escaneo registrado de un código: si fue 'ok' resta 1
-    a la cantidad escaneada (validada), si fue 'excedente' resta 1 a la
-    cantidad devuelta (excedente). No borra el código, solo ajusta el conteo."""
+def deshacer_scan(conn, week_tag, tienda, codigo, escaneado_delta=1, devuelto_delta=0, prev_state=None):
+    """Revierte un escaneo (o una cantidad en lote) registrado de un código,
+    restando exactamente lo que ese evento sumó: escaneado_delta de la
+    cantidad validada y devuelto_delta de la cantidad excedente. No borra el
+    código, solo ajusta el conteo.
+
+    Por compatibilidad con registros antiguos (guardados antes de tener
+    'cantidad'), si se recibe el parámetro viejo 'tipo' como string en vez de
+    un número en escaneado_delta, se asume 1 unidad."""
+    if isinstance(escaneado_delta, str):
+        # llamada con la firma vieja: deshacer_scan(conn, wt, t, codigo, tipo, prev_state)
+        tipo_legacy = escaneado_delta
+        escaneado_delta = 0 if tipo_legacy == "excedente" else 1
+        devuelto_delta = 1 if tipo_legacy == "excedente" else 0
+
     cur = conn.cursor()
     cur.execute(
         "SELECT cantidad_escaneada, cantidad_devuelta FROM scans WHERE week_tag=? AND tienda=? AND codigo=?",
@@ -234,10 +267,8 @@ def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
     if not row:
         return {"escaneado_total": 0, "devuelto_total": 0}
     escaneado, devuelto = row
-    if tipo == "excedente":
-        devuelto = max(devuelto - 1, 0)
-    else:
-        escaneado = max(escaneado - 1, 0)
+    escaneado = max(escaneado - escaneado_delta, 0)
+    devuelto = max(devuelto - devuelto_delta, 0)
     now = _ahora().isoformat(timespec="seconds")
     cur.execute(
         """UPDATE scans SET cantidad_escaneada=?, cantidad_devuelta=?, ultima_actualizacion=?
@@ -331,3 +362,7 @@ def get_stock_descripciones():
     almacén (eso requiere las credenciales de Google de sheets_db.py), así
     que el reporte simplemente queda sin descripciones en este modo."""
     return {}
+
+
+def get_stock_error():
+    return None

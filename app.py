@@ -481,6 +481,14 @@ elif seccion_activa == "2":
                     placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
                     label_visibility="visible",
                 )
+                cantidad_input = st.number_input(
+                    "Cantidad (déjalo en 1 para escanear normal; súbelo si ya contaste "
+                    "físicamente varias unidades del mismo código)",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key="scan_cantidad",
+                )
                 submitted = st.form_submit_button("✅ Registrar escaneo")
 
             resultado_box = st.empty()
@@ -492,8 +500,12 @@ elif seccion_activa == "2":
                 # crucen exactamente. Todo se trata como texto (nunca como número),
                 # por lo que ceros finales tipo .010 o .1140 no se pierden ni se redondean.
                 codigo_limpio = pk.quitar_punto(codigo_input.strip())
+                cantidad_a_registrar = int(cantidad_input) if cantidad_input else 1
                 prev_state = scans_map.get(codigo_limpio)
-                resultado = db.register_scan(conn, week_sel, tienda_sel, codigo_limpio, solicitado_map, prev_state)
+                resultado = db.register_scan(
+                    conn, week_sel, tienda_sel, codigo_limpio, solicitado_map, prev_state,
+                    cantidad=cantidad_a_registrar,
+                )
 
                 if resultado["estado"] != "no_pertenece":
                     # actualizamos el cache en memoria, sin releer la hoja
@@ -508,26 +520,31 @@ elif seccion_activa == "2":
                         {
                             "codigo": codigo_limpio,
                             "tipo": resultado["estado"],
+                            "cantidad": cantidad_a_registrar,
+                            "escaneado_delta": resultado.get("escaneado_delta", 0),
+                            "devuelto_delta": resultado.get("devuelto_delta", 0),
                             "hora": datetime.now().strftime("%H:%M:%S"),
                         }
                     )
                     st.session_state[log_key] = log_scans
+
+                def _fmt(n):
+                    return int(n) if float(n).is_integer() else n
 
                 if resultado["estado"] == "no_pertenece":
                     resultado_box.error(
                         f"❌ El código **{codigo_limpio}** NO pertenece al pedido de esta tienda."
                     )
                 elif resultado["estado"] == "excedente":
+                    extra = f" (x{cantidad_a_registrar})" if cantidad_a_registrar > 1 else ""
                     resultado_box.warning(
-                        f"⚠️ El código **{codigo_limpio}** ya alcanzó la cantidad solicitada "
-                        f"({resultado['solicitado']}). Esta unidad se registra como **excedente**."
+                        f"⚠️ El código **{codigo_limpio}**{extra} superó la cantidad solicitada "
+                        f"({resultado['solicitado']}). El excedente se registra como **excedente**."
                     )
                 else:
-                    def _fmt(n):
-                        return int(n) if float(n).is_integer() else n
-
+                    extra = f" (+{cantidad_a_registrar})" if cantidad_a_registrar > 1 else ""
                     resultado_box.success(
-                        f"✅ OK — {codigo_limpio}: {_fmt(resultado['escaneado_total'])} / {_fmt(resultado['solicitado'])}"
+                        f"✅ OK{extra} — {codigo_limpio}: {_fmt(resultado['escaneado_total'])} / {_fmt(resultado['solicitado'])}"
                     )
 
             # -------- Resumen de los últimos 5 escaneados (con deshacer) --------
@@ -540,6 +557,7 @@ elif seccion_activa == "2":
                 for idx in indices_recientes:
                     entry = log_scans[idx]
                     codigo_e = entry["codigo"]
+                    cantidad_e = entry.get("cantidad", 1)
                     solicitado_e = solicitado_map.get(codigo_e, 0)
                     escaneado_e = scans_map.get(codigo_e, {}).get("escaneado", 0)
                     devuelto_e = scans_map.get(codigo_e, {}).get("devuelto", 0)
@@ -548,7 +566,8 @@ elif seccion_activa == "2":
                     ec1, ec2, ec3 = st.columns([3, 3, 1])
                     with ec1:
                         icono = "⚠️" if hay_exceso else "✅"
-                        st.markdown(f"{icono} **{codigo_e}**  ·  {entry['hora']}")
+                        etiqueta_cant = f"  (x{int(cantidad_e)})" if cantidad_e > 1 else ""
+                        st.markdown(f"{icono} **{codigo_e}**{etiqueta_cant}  ·  {entry['hora']}")
                     with ec2:
                         texto_cant = f"{int(escaneado_e)} / {int(solicitado_e) if solicitado_e else 0}"
                         if hay_exceso:
@@ -557,9 +576,20 @@ elif seccion_activa == "2":
                     with ec3:
                         if st.button("↩ Deshacer", key=f"undo_{cache_key}_{idx}"):
                             prev = scans_map.get(codigo_e)
-                            resultado_undo = db.deshacer_scan(
-                                conn, week_sel, tienda_sel, codigo_e, entry["tipo"], prev
-                            )
+                            # entradas viejas del log (antes de tener cantidad) solo
+                            # traen 'tipo' — deshacer_scan sabe interpretar ambas.
+                            esc_delta = entry.get("escaneado_delta")
+                            dev_delta = entry.get("devuelto_delta")
+                            if esc_delta is None and dev_delta is None:
+                                resultado_undo = db.deshacer_scan(
+                                    conn, week_sel, tienda_sel, codigo_e,
+                                    entry.get("tipo", "ok"), prev_state=prev,
+                                )
+                            else:
+                                resultado_undo = db.deshacer_scan(
+                                    conn, week_sel, tienda_sel, codigo_e,
+                                    esc_delta or 0, dev_delta or 0, prev,
+                                )
                             scans_map[codigo_e] = {
                                 "escaneado": resultado_undo["escaneado_total"],
                                 "devuelto": resultado_undo["devuelto_total"],
@@ -671,10 +701,13 @@ elif seccion_activa == "3":
     if weeks:
         week_reporte = st.selectbox("Semana para el reporte", weeks, key="reporte_week")
         if st.button("Generar reporte"):
-            reporte_bytes, resumen_preview, _ = report.generar_reporte(db, conn, week_reporte)
+            reporte_bytes, resumen_preview, _, stock_warning = report.generar_reporte(db, conn, week_reporte)
             st.session_state["reporte_bytes"] = reporte_bytes
             st.session_state["reporte_name"] = f"REPOR Picking Subcedis {week_reporte}.xlsx"
             st.session_state["reporte_preview"] = resumen_preview
+            st.session_state["reporte_stock_warning"] = stock_warning
+            if stock_warning:
+                st.warning(f"⚠️ Descripciones de producto: {stock_warning}")
 
         if "reporte_preview" in st.session_state:
             reporte_preview_display = st.session_state["reporte_preview"].copy()

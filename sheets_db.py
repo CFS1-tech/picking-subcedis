@@ -311,14 +311,20 @@ def get_scans_tienda(conn, week_tag, tienda):
     return out
 
 
-def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None):
-    """Registra un escaneo directamente sobre la hoja 'scans'.
+def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=None, cantidad=1):
+    """Registra un escaneo (o una cantidad contada manualmente de una vez)
+    directamente sobre la hoja 'scans'.
+
+    cantidad: unidades a sumar en esta sola llamada (por defecto 1, como un
+    escaneo normal). Si escaneado_prev + cantidad supera lo solicitado, lo
+    que cabe se registra como validado y el resto como excedente.
 
     prev_state (opcional): {"escaneado": x, "devuelto": y, "row": n} si ya se
     conoce el estado previo de ese código (evita releer toda la hoja). Si es
     None, se asume que es la primera vez que se escanea ese código en esta
     sesión y se agrega como fila nueva.
     """
+    cantidad = max(int(cantidad), 1)
     ws = conn.worksheet("scans")
 
     pertenece = codigo in solicitado_map
@@ -336,13 +342,24 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         devuelto_prev = 0
         row_number = None
 
-    if escaneado_prev + 1 > solicitado:
+    escaneado_delta = 0
+    devuelto_delta = 0
+    if escaneado_prev >= solicitado:
         estado = "excedente"
+        devuelto_delta = cantidad
         nuevo_escaneado = escaneado_prev
-        nuevo_devuelto = devuelto_prev + 1
+        nuevo_devuelto = devuelto_prev + cantidad
+    elif escaneado_prev + cantidad > solicitado:
+        estado = "excedente"
+        cabe = solicitado - escaneado_prev
+        escaneado_delta = cabe
+        devuelto_delta = cantidad - cabe
+        nuevo_escaneado = escaneado_prev + cabe
+        nuevo_devuelto = devuelto_prev + devuelto_delta
     else:
         estado = "ok"
-        nuevo_escaneado = escaneado_prev + 1
+        escaneado_delta = cantidad
+        nuevo_escaneado = escaneado_prev + cantidad
         nuevo_devuelto = devuelto_prev
 
     now = _ahora().isoformat(timespec="seconds")
@@ -376,15 +393,27 @@ def register_scan(conn, week_tag, tienda, codigo, solicitado_map, prev_state=Non
         "solicitado": solicitado,
         "escaneado_total": nuevo_escaneado,
         "devuelto_total": nuevo_devuelto,
+        "escaneado_delta": escaneado_delta,
+        "devuelto_delta": devuelto_delta,
         "row": row_number,
     }
 
 
-def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
-    """Revierte el ÚLTIMO escaneo registrado de un código: si fue 'ok' resta 1
-    a la cantidad escaneada (validada), si fue 'excedente' resta 1 a la
-    cantidad devuelta (excedente). Requiere prev_state (con 'row') para poder
-    actualizar directamente esa fila sin releer toda la hoja."""
+def deshacer_scan(conn, week_tag, tienda, codigo, escaneado_delta=1, devuelto_delta=0, prev_state=None):
+    """Revierte un escaneo (o una cantidad en lote) registrado de un código,
+    restando exactamente lo que ese evento sumó: escaneado_delta de la
+    cantidad validada y devuelto_delta de la cantidad excedente. Requiere
+    prev_state (con 'row') para poder actualizar directamente esa fila sin
+    releer toda la hoja.
+
+    Por compatibilidad con registros antiguos (guardados antes de tener
+    'cantidad'), si se recibe la firma vieja con 'tipo' como string en
+    escaneado_delta, se asume 1 unidad."""
+    if isinstance(escaneado_delta, str):
+        tipo_legacy = escaneado_delta
+        escaneado_delta = 0 if tipo_legacy == "excedente" else 1
+        devuelto_delta = 1 if tipo_legacy == "excedente" else 0
+
     ws = conn.worksheet("scans")
     if not prev_state or prev_state.get("row") is None:
         return {"escaneado_total": 0, "devuelto_total": 0}
@@ -393,10 +422,8 @@ def deshacer_scan(conn, week_tag, tienda, codigo, tipo, prev_state=None):
     devuelto = prev_state.get("devuelto", 0)
     row_number = prev_state["row"]
 
-    if tipo == "excedente":
-        devuelto = max(devuelto - 1, 0)
-    else:
-        escaneado = max(escaneado - 1, 0)
+    escaneado = max(escaneado - escaneado_delta, 0)
+    devuelto = max(devuelto - devuelto_delta, 0)
 
     now = _ahora().isoformat(timespec="seconds")
     ws.update(
@@ -506,11 +533,22 @@ STOCK_SHEET_TAB = "Hoja 1"
 STOCK_FAMILIA = "LA CARCASA MOVIL"
 
 
+_ULTIMO_ERROR_STOCK = None
+
+
+def get_stock_error():
+    """Devuelve el último mensaje de error/diagnóstico al intentar leer el
+    Sheet de stock (None si la última lectura fue exitosa)."""
+    return _ULTIMO_ERROR_STOCK
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_stock_descripciones():
     """Devuelve un dict {codigo: descripcion} leyendo el Sheet de stock del
     almacén, filtrado a la familia 'LA CARCASA MOVIL'. Se cachea 10 minutos
     para no gastar cuota de la API en cada reporte generado."""
+    global _ULTIMO_ERROR_STOCK
+    _ULTIMO_ERROR_STOCK = None
     try:
         client = _get_client()
         sh = client.open_by_key(STOCK_SHEET_ID)
@@ -520,17 +558,35 @@ def get_stock_descripciones():
         # a la izquierda, así que lo excluimos de la auto-conversión numérica.
         idx_codigo = headers.index("Código") + 1 if "Código" in headers else None
         values = ws.get_all_records(numericise_ignore=[idx_codigo] if idx_codigo else [])
-    except Exception:
+    except Exception as e:
         # si el sheet de stock no está disponible por algún motivo, el
-        # reporte debe seguir funcionando igual (solo sin las descripciones).
+        # reporte debe seguir funcionando igual (solo sin las descripciones),
+        # pero guardamos el motivo para poder mostrarlo en la app.
+        _ULTIMO_ERROR_STOCK = f"No se pudo leer el Sheet de stock: {e}"
+        return {}
+
+    if not values:
+        _ULTIMO_ERROR_STOCK = (
+            f"El Sheet de stock (hoja '{STOCK_SHEET_TAB}') se leyó pero está vacío, "
+            "o los encabezados no coinciden con lo esperado."
+        )
         return {}
 
     resultado = {}
+    filas_familia = 0
     for row in values:
-        familia = str(row.get("Familia", "")).strip()
-        if familia != STOCK_FAMILIA:
+        familia = str(row.get("Familia", "")).strip().upper()
+        if familia != STOCK_FAMILIA.upper():
             continue
+        filas_familia += 1
         codigo = str(row.get("Código", "")).strip()
         if codigo:
             resultado[codigo] = row.get("Descripción", "")
+
+    if filas_familia == 0:
+        familias_vistas = sorted({str(r.get("Familia", "")).strip() for r in values})[:10]
+        _ULTIMO_ERROR_STOCK = (
+            f"No se encontró ninguna fila con Familia = '{STOCK_FAMILIA}' en el Sheet de stock. "
+            f"Familias vistas (ejemplo): {familias_vistas}"
+        )
     return resultado
