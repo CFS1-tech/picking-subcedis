@@ -59,6 +59,7 @@ def generar_reporte(db, conn, week_tag):
     # stock del almacén (familia 'LA CARCASA MOVIL'). Si no está disponible
     # (ej. modo SQLite local, o el sheet externo falla), queda vacío.
     descripciones = db.get_stock_descripciones() if hasattr(db, "get_stock_descripciones") else {}
+    stock_warning = db.get_stock_error() if hasattr(db, "get_stock_error") else None
 
     # Una sola lectura del historial completo de la semana (con detalle por
     # código), en vez de una lectura por tienda — evita agotar la cuota de
@@ -222,4 +223,4 @@ def generar_reporte(db, conn, week_tag):
                 width = max(12, len(str(col_name)) + 2)
                 ws.column_dimensions[get_column_letter(col_idx)].width = width
 
-    return buffer.getvalue(), resumen_df, detalle_df
+    return buffer.getvalue(), resumen_df, detalle_df, stock_warning
