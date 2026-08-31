@@ -75,7 +75,24 @@ def cargar_packing_list(xlsx_path_or_buffer, nombre_archivo=""):
       - pools_df: columnas pool_id, documento, box_number, codigos_miembros,
         cantidad_total_esperada
     """
-    df = pd.read_excel(xlsx_path_or_buffer, dtype=str)
+    # Algunos packing lists traen una fila extra arriba de los encabezados
+    # (ej. "CARTON DIMENSION/M" como título de un grupo de columnas), así que
+    # no siempre la fila 0 es el encabezado real. Buscamos entre las primeras
+    # filas cuál trae "BOX NUMBER" (o similar) y usamos esa como encabezado.
+    vista_previa = pd.read_excel(xlsx_path_or_buffer, header=None, nrows=10, dtype=str)
+    fila_encabezado = 0
+    for i in range(len(vista_previa)):
+        valores_fila = [str(v).strip().lower() for v in vista_previa.iloc[i].tolist()]
+        if any(v in ("box number", "box_number") for v in valores_fila):
+            fila_encabezado = i
+            break
+
+    # Si es un archivo subido por Streamlit (file-like), hay que rebobinarlo:
+    # la lectura de la vista previa ya movió el cursor al final.
+    if hasattr(xlsx_path_or_buffer, "seek"):
+        xlsx_path_or_buffer.seek(0)
+
+    df = pd.read_excel(xlsx_path_or_buffer, header=fila_encabezado, dtype=str)
     df.columns = [str(c).strip() for c in df.columns]
 
     col_box = _find_col(df.columns, COL_ALIASES["box_number"])
