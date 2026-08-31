@@ -45,6 +45,18 @@ PEDIDO_DETALLE_HEADERS = [
     "cabecera_original", "articulo_original", "cod", "color",
 ]
 
+# ------------------------------------------------------------------
+# Recepciones (packing lists de recepción)
+# ------------------------------------------------------------------
+RECEPCION_PEDIDO_HEADERS = ["documento", "fecha_carga", "nombre_archivo", "formato_detectado", "total_lineas"]
+RECEPCION_DETALLE_HEADERS = ["documento", "box_number", "codigo", "tipo_linea", "pool_id", "cantidad_esperada"]
+RECEPCION_POOLS_HEADERS = ["pool_id", "documento", "box_number", "codigos_miembros", "cantidad_total_esperada"]
+RECEPCION_SCANS_HEADERS = ["documento", "box_number", "pool_id", "codigo", "cantidad_recibida", "cantidad_devuelta", "hora"]
+RECEPCION_HISTORIAL_HEADERS = [
+    "documento", "box_number", "fecha_cierre",
+    "total_esperado", "total_recibido", "faltante_total", "excedente_total", "detalle_json",
+]
+
 
 def _get_credentials():
     """Arma credenciales OAuth de usuario a partir de client_id/secret/refresh_token
@@ -104,6 +116,18 @@ def _ensure_all_worksheets(_sh):
     # y evita que Sheets convierta códigos tipo "005" a número al guardarlos.
     try:
         ws_scans.format("C1:C20000", {"numberFormat": {"type": "TEXT"}})
+    except Exception:
+        pass
+
+    _ensure_worksheet(_sh, "recepcion_pedido", RECEPCION_PEDIDO_HEADERS)
+    _ensure_worksheet(_sh, "recepcion_detalle", RECEPCION_DETALLE_HEADERS)
+    _ensure_worksheet(_sh, "recepcion_pools", RECEPCION_POOLS_HEADERS)
+    ws_rec_scans = _ensure_worksheet(_sh, "recepcion_scans", RECEPCION_SCANS_HEADERS)
+    _ensure_worksheet(_sh, "recepcion_historial", RECEPCION_HISTORIAL_HEADERS)
+
+    try:
+        # documento(1), box_number(2), pool_id(3), codigo(4): texto siempre.
+        ws_rec_scans.format("A1:D20000", {"numberFormat": {"type": "TEXT"}})
     except Exception:
         pass
 
@@ -590,3 +614,296 @@ def get_stock_descripciones():
             f"Familias vistas (ejemplo): {familias_vistas}"
         )
     return resultado
+
+
+# ------------------------------------------------------------------
+# RECEPCIONES (packing lists AP): guardar packing list, validar por
+# escaneo (líneas individuales y "pools" de códigos agrupados por caja),
+# e historial de cierre por caja.
+# ------------------------------------------------------------------
+def guardar_packing_list_recepcion(conn, resumen, detalle_df, pools_df):
+    """Reemplaza el packing list completo de un documento (detalle + pools)
+    y reinicia los escaneos de las cajas que trae este documento."""
+    documento = resumen["documento"]
+    now = _ahora().isoformat(timespec="seconds")
+
+    # recepcion_pedido: upsert por documento
+    ws_pedido = conn.worksheet("recepcion_pedido")
+    pedido_df = _records_df(ws_pedido, RECEPCION_PEDIDO_HEADERS, numericise_ignore=[1])
+    if not pedido_df.empty:
+        pedido_df = pedido_df[pedido_df["documento"].astype(str) != str(documento)]
+    nueva_fila = pd.DataFrame([{
+        "documento": documento,
+        "fecha_carga": now,
+        "nombre_archivo": resumen.get("nombre_archivo", ""),
+        "formato_detectado": resumen.get("formato_detectado", ""),
+        "total_lineas": resumen.get("total_lineas", 0),
+    }])
+    pedido_df = pd.concat([pedido_df, nueva_fila], ignore_index=True)
+    _write_df(ws_pedido, pedido_df, RECEPCION_PEDIDO_HEADERS, columnas_texto=["documento"])
+
+    # recepcion_detalle: reemplaza las filas de este documento
+    ws_detalle = conn.worksheet("recepcion_detalle")
+    detalle_actual = _records_df(ws_detalle, RECEPCION_DETALLE_HEADERS, numericise_ignore=[1, 2, 3, 5])
+    if not detalle_actual.empty:
+        detalle_actual = detalle_actual[detalle_actual["documento"].astype(str) != str(documento)]
+    detalle_nuevo = detalle_df.copy()
+    detalle_nuevo["documento"] = documento
+    resultado_detalle = pd.concat([detalle_actual, detalle_nuevo[RECEPCION_DETALLE_HEADERS]], ignore_index=True)
+    _write_df(ws_detalle, resultado_detalle, RECEPCION_DETALLE_HEADERS,
+              columnas_texto=["documento", "box_number", "codigo", "pool_id"])
+
+    # recepcion_pools: reemplaza las filas de este documento
+    ws_pools = conn.worksheet("recepcion_pools")
+    pools_actual = _records_df(ws_pools, RECEPCION_POOLS_HEADERS, numericise_ignore=[1, 2, 3])
+    if not pools_actual.empty:
+        pools_actual = pools_actual[pools_actual["documento"].astype(str) != str(documento)]
+    pools_nuevo = pools_df.copy()
+    pools_nuevo["documento"] = documento
+    resultado_pools = pd.concat([pools_actual, pools_nuevo[RECEPCION_POOLS_HEADERS]], ignore_index=True)
+    _write_df(ws_pools, resultado_pools, RECEPCION_POOLS_HEADERS,
+              columnas_texto=["pool_id", "documento", "box_number"])
+
+    # recepcion_scans: limpia los escaneos de las cajas que trae este documento
+    ws_scans = conn.worksheet("recepcion_scans")
+    scans_actual = _records_df(ws_scans, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4])
+    if not scans_actual.empty:
+        scans_actual = scans_actual[scans_actual["documento"].astype(str) != str(documento)]
+        _write_df(ws_scans, scans_actual, RECEPCION_SCANS_HEADERS,
+                  columnas_texto=["documento", "box_number", "pool_id", "codigo"])
+
+    _recepcion_detalle_cached.clear()
+    _recepcion_pools_cached.clear()
+    _recepcion_pedido_cached.clear()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _recepcion_pedido_cached(_conn):
+    ws = _conn.worksheet("recepcion_pedido")
+    return _records_df(ws, RECEPCION_PEDIDO_HEADERS, numericise_ignore=[1])
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _recepcion_detalle_cached(_conn):
+    ws = _conn.worksheet("recepcion_detalle")
+    return _records_df(ws, RECEPCION_DETALLE_HEADERS, numericise_ignore=[1, 2, 3, 5])
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _recepcion_pools_cached(_conn):
+    ws = _conn.worksheet("recepcion_pools")
+    return _records_df(ws, RECEPCION_POOLS_HEADERS, numericise_ignore=[1, 2, 3])
+
+
+def list_documentos_recepcion(conn):
+    df = _recepcion_pedido_cached(conn)
+    if df.empty:
+        return []
+    return list(df[["documento", "fecha_carga", "formato_detectado", "total_lineas"]].itertuples(index=False, name=None))
+
+
+def list_cajas_documento(conn, documento):
+    df = _recepcion_detalle_cached(conn)
+    if df.empty:
+        return []
+    df = df[df["documento"].astype(str) == str(documento)]
+    conteo = df.groupby("box_number").size().reset_index(name="n")
+    return list(conteo.sort_values("box_number").itertuples(index=False, name=None))
+
+
+def list_cajas_pendientes(conn, documento):
+    todas = [c for c, _ in list_cajas_documento(conn, documento)]
+    ws_hist = conn.worksheet("recepcion_historial")
+    hist_df = _records_df(ws_hist, RECEPCION_HISTORIAL_HEADERS, numericise_ignore=[1, 2])
+    cerradas = set()
+    if not hist_df.empty:
+        hist_df = hist_df[hist_df["documento"].astype(str) == str(documento)]
+        cerradas = set(hist_df["box_number"].astype(str))
+    return [c for c in todas if str(c) not in cerradas]
+
+
+def get_detalle_caja(conn, documento, box_number):
+    df = _recepcion_detalle_cached(conn)
+    if df.empty:
+        return {}
+    df = df[(df["documento"].astype(str) == str(documento)) & (df["box_number"].astype(str) == str(box_number))]
+    detalle_map = {}
+    for _, r in df.iterrows():
+        cantidad = r["cantidad_esperada"]
+        detalle_map[str(r["codigo"])] = {
+            "box_number": str(r["box_number"]),
+            "tipo_linea": r["tipo_linea"],
+            "pool_id": str(r["pool_id"]) if r["pool_id"] not in (None, "") else "",
+            "cantidad_esperada": float(cantidad) if cantidad not in (None, "") else 0,
+        }
+    return detalle_map
+
+
+def get_pools_caja(conn, documento, box_number):
+    df = _recepcion_pools_cached(conn)
+    if df.empty:
+        return {}
+    df = df[(df["documento"].astype(str) == str(documento)) & (df["box_number"].astype(str) == str(box_number))]
+    pools_map = {}
+    for _, r in df.iterrows():
+        miembros = [c.strip() for c in str(r["codigos_miembros"]).split(",") if c.strip()]
+        pools_map[str(r["pool_id"])] = {
+            "codigos_miembros": miembros,
+            "cantidad_total_esperada": float(r["cantidad_total_esperada"]) if r["cantidad_total_esperada"] not in (None, "") else 0,
+        }
+    return pools_map
+
+
+def get_scans_caja(conn, documento, box_number):
+    ws = conn.worksheet("recepcion_scans")
+    # codigo(4) y pool_id(3): nunca numerizar, para no perder ceros a la izquierda.
+    df = _records_df(ws, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4])
+    if df.empty:
+        return {}
+    mask = (df["documento"].astype(str) == str(documento)) & (df["box_number"].astype(str) == str(box_number))
+    df = df[mask]
+    out = {}
+    for idx, r in df.iterrows():
+        out[str(r["codigo"])] = {
+            "recibido": float(r["cantidad_recibida"] or 0),
+            "devuelto": float(r["cantidad_devuelta"] or 0),
+            "row": idx + 2,
+        }
+    return out
+
+
+def register_scan_recepcion(conn, documento, box_number, codigo, detalle_map, pools_map, scans_map, prev_state=None, cantidad=1):
+    """Igual que la versión de db.py, pero escribiendo directo en la hoja
+    'recepcion_scans' (actualiza la fila si ya existe, o la agrega)."""
+    cantidad = max(int(cantidad), 1)
+    ws = conn.worksheet("recepcion_scans")
+
+    info = detalle_map.get(codigo)
+    if info is None:
+        return {"estado": "no_pertenece", "tope": 0, "recibido_total": 0, "devuelto_total": 0,
+                "escaneado_delta": 0, "devuelto_delta": 0, "pool_recibido_total": None, "pool_tope": None, "row": None}
+
+    if prev_state is not None:
+        recibido_prev = prev_state.get("recibido", 0)
+        devuelto_prev = prev_state.get("devuelto", 0)
+        row_number = prev_state.get("row")
+    else:
+        recibido_prev = 0
+        devuelto_prev = 0
+        row_number = None
+
+    pool_id = info.get("pool_id") or ""
+    if info["tipo_linea"] == "pool" and pool_id in pools_map:
+        tope = pools_map[pool_id]["cantidad_total_esperada"]
+        recibido_prev_grupo = sum(
+            scans_map.get(c, {}).get("recibido", 0) for c in pools_map[pool_id]["codigos_miembros"]
+        )
+    else:
+        tope = info["cantidad_esperada"]
+        recibido_prev_grupo = recibido_prev
+
+    if recibido_prev_grupo >= tope:
+        estado = "excedente"
+        escaneado_delta = 0
+        devuelto_delta = cantidad
+    elif recibido_prev_grupo + cantidad > tope:
+        estado = "excedente"
+        cabe = tope - recibido_prev_grupo
+        escaneado_delta = cabe
+        devuelto_delta = cantidad - cabe
+    else:
+        estado = "ok"
+        escaneado_delta = cantidad
+        devuelto_delta = 0
+
+    nuevo_recibido = recibido_prev + escaneado_delta
+    nuevo_devuelto = devuelto_prev + devuelto_delta
+    now = _ahora().isoformat(timespec="seconds")
+
+    if row_number is not None:
+        ws.update(
+            f"A{row_number}:G{row_number}",
+            [[documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now]],
+            value_input_option="RAW",
+        )
+    else:
+        response = ws.append_row(
+            [documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now],
+            value_input_option="RAW",
+        )
+        try:
+            updated_range = response["updates"]["updatedRange"]
+            row_number = int("".join(filter(str.isdigit, updated_range.split("!")[1].split(":")[0])))
+        except (KeyError, ValueError, IndexError):
+            row_number = None
+
+    pool_recibido_total = (recibido_prev_grupo + escaneado_delta) if info["tipo_linea"] == "pool" else None
+
+    return {
+        "estado": estado,
+        "tope": tope,
+        "recibido_total": nuevo_recibido,
+        "devuelto_total": nuevo_devuelto,
+        "escaneado_delta": escaneado_delta,
+        "devuelto_delta": devuelto_delta,
+        "pool_recibido_total": pool_recibido_total,
+        "pool_tope": tope if info["tipo_linea"] == "pool" else None,
+        "row": row_number,
+    }
+
+
+def deshacer_scan_recepcion(conn, documento, box_number, codigo, escaneado_delta=1, devuelto_delta=0, prev_state=None):
+    ws = conn.worksheet("recepcion_scans")
+    if not prev_state or prev_state.get("row") is None:
+        return {"recibido_total": 0, "devuelto_total": 0}
+
+    recibido = prev_state.get("recibido", 0)
+    devuelto = prev_state.get("devuelto", 0)
+    row_number = prev_state["row"]
+    pool_id = prev_state.get("pool_id", "")
+
+    recibido = max(recibido - escaneado_delta, 0)
+    devuelto = max(devuelto - devuelto_delta, 0)
+    now = _ahora().isoformat(timespec="seconds")
+    ws.update(
+        f"A{row_number}:G{row_number}",
+        [[documento, box_number, pool_id, codigo, recibido, devuelto, now]],
+        value_input_option="RAW",
+    )
+    return {"recibido_total": recibido, "devuelto_total": devuelto}
+
+
+def guardar_historial_recepcion(conn, documento, box_number, resumen_rows):
+    ws = conn.worksheet("recepcion_historial")
+    total_esperado = sum(r["esperado"] for r in resumen_rows)
+    total_recibido = sum(r["recibido"] for r in resumen_rows)
+    faltante_total = sum(r["falta"] for r in resumen_rows)
+    excedente_total = sum(r["excedente"] for r in resumen_rows)
+
+    ws.append_row(
+        [
+            documento,
+            box_number,
+            _ahora().isoformat(timespec="seconds"),
+            total_esperado,
+            total_recibido,
+            faltante_total,
+            excedente_total,
+            json.dumps(resumen_rows, ensure_ascii=False),
+        ],
+        value_input_option="RAW",
+    )
+
+
+def get_historial_recepcion(conn, documento=None, box_number=None):
+    ws = conn.worksheet("recepcion_historial")
+    df = _records_df(ws, RECEPCION_HISTORIAL_HEADERS, numericise_ignore=[1, 2])
+    if df.empty:
+        return []
+    if documento:
+        df = df[df["documento"].astype(str) == str(documento)]
+    if box_number:
+        df = df[df["box_number"].astype(str) == str(box_number)]
+    df = df.sort_values("fecha_cierre", ascending=False)
+    cols = RECEPCION_HISTORIAL_HEADERS[:-1]  # sin detalle_json
+    return list(df[cols].itertuples(index=False, name=None))

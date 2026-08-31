@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 import parser as pk
+import parser_recepcion as pr
 import report
 
 TZ_PERU = ZoneInfo("America/Lima")
@@ -133,6 +134,365 @@ else:
 
 conn = db.init_db()
 
+# ------------------------------------------------------------------
+# Selector de módulo: Picking (validación de pedidos) o Recepciones
+# (packing lists de proveedores). Se muestra siempre arriba del todo,
+# antes de cualquier otra cosa.
+# ------------------------------------------------------------------
+if "modulo_activo" not in st.session_state:
+    st.session_state["modulo_activo"] = "picking"
+
+st.sidebar.title("Picking Subcedis")
+mcol1, mcol2 = st.sidebar.columns(2)
+with mcol1:
+    if st.button(
+        "📦 Picking", key="modulo_picking", use_container_width=True,
+        type="primary" if st.session_state["modulo_activo"] == "picking" else "secondary",
+    ):
+        st.session_state["modulo_activo"] = "picking"
+        st.rerun()
+with mcol2:
+    if st.button(
+        "📥 Recepciones", key="modulo_recepcion", use_container_width=True,
+        type="primary" if st.session_state["modulo_activo"] == "recepcion" else "secondary",
+    ):
+        st.session_state["modulo_activo"] = "recepcion"
+        st.rerun()
+st.sidebar.markdown("---")
+
+modulo_activo = st.session_state["modulo_activo"]
+
+# ==================================================================
+# MÓDULO: RECEPCIONES (packing lists AP tipo1/tipo2, con pools por caja)
+# Todo este bloque termina en st.stop(), así que el módulo de Picking
+# de abajo queda completamente sin tocar y no se ejecuta en este modo.
+# ==================================================================
+if modulo_activo == "recepcion":
+    if "seccion_recepcion" not in st.session_state:
+        st.session_state["seccion_recepcion"] = "1"
+
+    SECCIONES_RECEPCION = [
+        ("1", "1. Cargar packing list"),
+        ("2", "2. Validar (escaneo)"),
+        ("3", "3. Historial"),
+    ]
+    for clave, etiqueta in SECCIONES_RECEPCION:
+        es_activa = st.session_state["seccion_recepcion"] == clave
+        if st.sidebar.button(
+            etiqueta, key=f"nav_rec_{clave}", use_container_width=True,
+            type="primary" if es_activa else "secondary",
+        ):
+            st.session_state["seccion_recepcion"] = clave
+            st.rerun()
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"Persistencia activa: **{PERSISTENCIA}**")
+    if PERSISTENCIA == "SQLite local":
+        st.sidebar.caption(
+            "⚠️ No se detectaron credenciales de Google Sheets en `st.secrets['gcp_oauth']`. "
+            "La app está usando SQLite local, que puede reiniciarse en Streamlit Cloud."
+        )
+
+    seccion_recepcion = st.session_state["seccion_recepcion"]
+
+    # -------------------- SECCIÓN 1: Cargar packing list --------------------
+    if seccion_recepcion == "1":
+        st.subheader("Cargar packing list de recepción")
+        st.caption(
+            "Sube el Excel del packing list (formato AP tipo 1 o tipo 2, se detecta "
+            "automáticamente según el código). Se identifica por el ORDER NUMBER (documento)."
+        )
+        uploaded_rec = st.file_uploader("Archivo Excel del packing list", type=["xlsx"], key="rec_uploader")
+
+        if uploaded_rec is not None:
+            try:
+                resumen, detalle_df, pools_df = pr.cargar_packing_list(uploaded_rec, nombre_archivo=uploaded_rec.name)
+            except Exception as e:
+                st.error(f"Error al leer el archivo: {e}")
+            else:
+                st.success(
+                    f"Documento detectado: **{resumen['documento']}** — formato **{resumen['formato_detectado']}** — "
+                    f"{resumen['total_lineas']} líneas ({len(pools_df)} caja(s) con códigos agrupados)."
+                )
+                with st.expander("Ver detalle consolidado", expanded=False):
+                    detalle_display = detalle_df.copy()
+                    detalle_display.index = range(1, len(detalle_display) + 1)
+                    st.dataframe(detalle_display, use_container_width=True)
+                if not pools_df.empty:
+                    with st.expander("Ver cajas con códigos agrupados (pools)", expanded=False):
+                        pools_display = pools_df.copy()
+                        pools_display.index = range(1, len(pools_display) + 1)
+                        st.dataframe(pools_display, use_container_width=True)
+
+                documentos_existentes = [d for d, *_ in db.list_documentos_recepcion(conn)]
+                if resumen["documento"] in documentos_existentes:
+                    st.warning(
+                        f"Ya existe un packing list cargado para el documento {resumen['documento']}. "
+                        "Si guardas de nuevo, se reemplazará y se reiniciarán los escaneos de sus cajas."
+                    )
+
+                if st.button("Guardar packing list", type="primary"):
+                    db.guardar_packing_list_recepcion(conn, resumen, detalle_df, pools_df)
+                    st.success(f"Packing list del documento {resumen['documento']} guardado.")
+                    st.balloons()
+
+    # -------------------- SECCIÓN 2: Validar por escaneo --------------------
+    elif seccion_recepcion == "2":
+        documentos = [d for d, *_ in db.list_documentos_recepcion(conn)]
+
+        if not documentos:
+            st.subheader("Validar recepción por escaneo")
+            st.info("Primero carga un packing list en la sección 1.")
+
+        elif not st.session_state.get("rec_activo"):
+            st.subheader("Validar recepción por escaneo")
+            st.caption(
+                "Elige el documento y la caja física que estás recibiendo. Cada caja se "
+                "valida por separado, aunque traiga el mismo grupo de códigos que otra."
+            )
+
+            documento_sel = st.selectbox("Documento", documentos, key="rec_documento_sel")
+            cajas_pendientes = db.list_cajas_pendientes(conn, documento_sel)
+
+            if not cajas_pendientes:
+                st.success("Todas las cajas de este documento ya tienen su validación cerrada. 🎉")
+            else:
+                caja_sel = st.selectbox("Caja (box number)", cajas_pendientes, key="rec_caja_sel")
+                if st.button("▶ Iniciar validación de esta caja", type="primary"):
+                    st.session_state["rec_activo"] = True
+                    st.session_state["rec_documento"] = documento_sel
+                    st.session_state["rec_caja"] = caja_sel
+                    st.rerun()
+
+        else:
+            documento_sel = st.session_state["rec_documento"]
+            caja_sel = st.session_state["rec_caja"]
+
+            header_col, salir_col = st.columns([4, 1.5], vertical_alignment="center")
+            with header_col:
+                st.markdown(
+                    f"""<div class="tienda-activa-header">
+                            <h3>📥 Caja {caja_sel}</h3>
+                            <span>Documento {documento_sel}</span>
+                        </div>""",
+                    unsafe_allow_html=True,
+                )
+            with salir_col:
+                if st.button("⬅ Cambiar caja", key="rec_cambiar_caja"):
+                    st.session_state["rec_activo"] = False
+                    st.rerun()
+
+            detalle_map = db.get_detalle_caja(conn, documento_sel, caja_sel)
+            pools_map = db.get_pools_caja(conn, documento_sel, caja_sel)
+
+            cache_key = f"rec_scans_{documento_sel}_{caja_sel}"
+            if cache_key not in st.session_state:
+                st.session_state[cache_key] = db.get_scans_caja(conn, documento_sel, caja_sel)
+            scans_map = st.session_state[cache_key]
+
+            log_key = f"rec_log_{cache_key}"
+            if log_key not in st.session_state:
+                st.session_state[log_key] = []
+            log_scans = st.session_state[log_key]
+
+            metricas_placeholder = st.container()
+
+            with st.form("rec_scan_form", clear_on_submit=True):
+                col_codigo, col_cantidad = st.columns([3, 1])
+                with col_codigo:
+                    codigo_input = st.text_input(
+                        "Escanea el código",
+                        key="rec_scan_input",
+                        placeholder="Escanea aquí con el lector USB (o escribe el código y Enter)",
+                    )
+                with col_cantidad:
+                    cantidad_input = st.number_input("Cantidad", min_value=1, value=1, step=1, key="rec_scan_cantidad")
+                st.caption(
+                    "Si ya contaste varias unidades físicamente, primero pon la cantidad aquí "
+                    "y RECIÉN escanea el código. Si dejas Cantidad en 1, escanea como siempre."
+                )
+                submitted = st.form_submit_button("✅ Registrar recepción")
+
+            resultado_box = st.empty()
+
+            if submitted and codigo_input:
+                codigo_limpio = codigo_input.strip()
+                cantidad_a_registrar = int(cantidad_input) if cantidad_input else 1
+                prev_state = scans_map.get(codigo_limpio)
+                resultado = db.register_scan_recepcion(
+                    conn, documento_sel, caja_sel, codigo_limpio, detalle_map, pools_map, scans_map,
+                    prev_state, cantidad=cantidad_a_registrar,
+                )
+
+                if resultado["estado"] != "no_pertenece":
+                    scans_map[codigo_limpio] = {
+                        "recibido": resultado["recibido_total"],
+                        "devuelto": resultado["devuelto_total"],
+                        "row": resultado["row"],
+                        "pool_id": detalle_map.get(codigo_limpio, {}).get("pool_id", ""),
+                    }
+                    st.session_state[cache_key] = scans_map
+                    log_scans.append({
+                        "codigo": codigo_limpio,
+                        "cantidad": cantidad_a_registrar,
+                        "escaneado_delta": resultado.get("escaneado_delta", 0),
+                        "devuelto_delta": resultado.get("devuelto_delta", 0),
+                        "hora": _hora_actual().strftime("%H:%M:%S"),
+                    })
+                    st.session_state[log_key] = log_scans
+
+                def _fmt(n):
+                    return int(n) if float(n).is_integer() else n
+
+                if resultado["estado"] == "no_pertenece":
+                    resultado_box.error(f"❌ El código **{codigo_limpio}** NO pertenece a esta caja.")
+                elif resultado["estado"] == "excedente":
+                    extra = f" (x{cantidad_a_registrar})" if cantidad_a_registrar > 1 else ""
+                    tope_txt = "del pool compartido" if detalle_map.get(codigo_limpio, {}).get("tipo_linea") == "pool" else "esperada"
+                    resultado_box.warning(
+                        f"⚠️ El código **{codigo_limpio}**{extra} superó la cantidad {tope_txt} "
+                        f"({_fmt(resultado['tope'])}). El excedente se registra como **excedente**."
+                    )
+                else:
+                    extra = f" (+{cantidad_a_registrar})" if cantidad_a_registrar > 1 else ""
+                    if resultado.get("pool_recibido_total") is not None:
+                        resultado_box.success(
+                            f"✅ OK{extra} — {codigo_limpio}: {_fmt(resultado['recibido_total'])} recibidos de este código · "
+                            f"pool {_fmt(resultado['pool_recibido_total'])} / {_fmt(resultado['pool_tope'])}"
+                        )
+                    else:
+                        resultado_box.success(
+                            f"✅ OK{extra} — {codigo_limpio}: {_fmt(resultado['recibido_total'])} / {_fmt(resultado['tope'])}"
+                        )
+
+            st.markdown("#### Últimos escaneados")
+            if not log_scans:
+                st.caption("Aún no has escaneado nada en esta caja.")
+            else:
+                indices_recientes = list(range(len(log_scans)))[-5:]
+                indices_recientes.reverse()
+                for idx in indices_recientes:
+                    entry = log_scans[idx]
+                    codigo_e = entry["codigo"]
+                    cantidad_e = entry.get("cantidad", 1)
+                    recibido_e = scans_map.get(codigo_e, {}).get("recibido", 0)
+                    devuelto_e = scans_map.get(codigo_e, {}).get("devuelto", 0)
+                    hay_exceso = devuelto_e and devuelto_e > 0
+
+                    ec1, ec2, ec3 = st.columns([3, 3, 1])
+                    with ec1:
+                        icono = "⚠️" if hay_exceso else "✅"
+                        etiqueta_cant = f"  (x{int(cantidad_e)})" if cantidad_e > 1 else ""
+                        st.markdown(f"{icono} **{codigo_e}**{etiqueta_cant}  ·  {entry['hora']}")
+                    with ec2:
+                        texto_cant = f"{int(recibido_e)} recibidos"
+                        if hay_exceso:
+                            texto_cant += f"  (+{int(devuelto_e)} excedente)"
+                        st.markdown(texto_cant)
+                    with ec3:
+                        if st.button("↩ Deshacer", key=f"rec_undo_{cache_key}_{idx}"):
+                            prev = scans_map.get(codigo_e)
+                            resultado_undo = db.deshacer_scan_recepcion(
+                                conn, documento_sel, caja_sel, codigo_e,
+                                entry.get("escaneado_delta", 0), entry.get("devuelto_delta", 0), prev,
+                            )
+                            scans_map[codigo_e] = {
+                                "recibido": resultado_undo["recibido_total"],
+                                "devuelto": resultado_undo["devuelto_total"],
+                                "row": prev.get("row") if prev else None,
+                                "pool_id": prev.get("pool_id", "") if prev else "",
+                            }
+                            st.session_state[cache_key] = scans_map
+                            log_scans.pop(idx)
+                            st.session_state[log_key] = log_scans
+                            st.rerun()
+
+            resumen_rows = []
+            for codigo, info in detalle_map.items():
+                if info["tipo_linea"] == "pool":
+                    tope = pools_map.get(info["pool_id"], {}).get("cantidad_total_esperada", 0)
+                else:
+                    tope = info["cantidad_esperada"]
+                recibido = scans_map.get(codigo, {}).get("recibido", 0)
+                devuelto = scans_map.get(codigo, {}).get("devuelto", 0)
+                resumen_rows.append({
+                    "codigo": codigo,
+                    "esperado": tope,
+                    "recibido": recibido,
+                    "falta": max(tope - recibido, 0) if info["tipo_linea"] == "individual" else 0,
+                    "excedente": devuelto,
+                })
+
+            resumen_df = pd.DataFrame(resumen_rows)
+
+            with metricas_placeholder:
+                if not resumen_df.empty:
+                    total_esperado_pools = sum(p["cantidad_total_esperada"] for p in pools_map.values())
+                    total_esperado_individual = sum(
+                        info["cantidad_esperada"] for info in detalle_map.values() if info["tipo_linea"] == "individual"
+                    )
+                    total_recibido = resumen_df["recibido"].sum()
+                    total_excedente = resumen_df["excedente"].sum()
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Esperado total", int(total_esperado_pools + total_esperado_individual))
+                    c2.metric("Recibido", int(total_recibido))
+                    c3.metric("Excedente", int(total_excedente))
+
+            if not resumen_df.empty:
+                with st.expander("Ver detalle por código", expanded=False):
+                    resumen_display = resumen_df.copy()
+                    for col in ["esperado", "recibido", "falta", "excedente"]:
+                        resumen_display[col] = resumen_display[col].astype(int)
+                    resumen_display.index = range(1, len(resumen_display) + 1)
+
+                    def _resaltar_faltantes_rec(row):
+                        if row["falta"] and row["falta"] != 0:
+                            return ["background-color: #fdecea"] * len(row)
+                        return [""] * len(row)
+
+                    st.dataframe(
+                        resumen_display.style.apply(_resaltar_faltantes_rec, axis=1),
+                        use_container_width=True,
+                    )
+
+                st.markdown("")
+                if st.button("🔒 Cerrar validación de esta caja y guardar en historial", type="primary"):
+                    db.guardar_historial_recepcion(conn, documento_sel, caja_sel, resumen_rows)
+                    st.success(f"Historial guardado para la caja {caja_sel} del documento {documento_sel}.")
+                    st.session_state["rec_activo"] = False
+                    st.balloons()
+
+    # -------------------- SECCIÓN 3: Historial --------------------
+    elif seccion_recepcion == "3":
+        st.subheader("Historial de recepciones")
+        documentos = [d for d, *_ in db.list_documentos_recepcion(conn)]
+        col1, col2 = st.columns(2)
+        with col1:
+            doc_filter = st.selectbox("Filtrar por documento", ["(todos)"] + documentos, key="rec_hist_doc")
+        with col2:
+            caja_filter = st.text_input("Filtrar por caja (ej. 1/3)", key="rec_hist_caja")
+
+        hist = db.get_historial_recepcion(
+            conn,
+            documento=None if doc_filter == "(todos)" else doc_filter,
+            box_number=caja_filter or None,
+        )
+        if hist:
+            hist_df = pd.DataFrame(
+                hist,
+                columns=["documento", "caja", "fecha_cierre", "esperado_total", "recibido_total", "faltante_total", "excedente_total"],
+            )
+            hist_df.index = range(1, len(hist_df) + 1)
+            st.dataframe(hist_df, use_container_width=True)
+        else:
+            st.info("Aún no hay historial de recepciones. Cierra la validación de una caja en la sección 2.")
+
+    st.stop()
+
+# ==================================================================
+# MÓDULO: PICKING (flujo original, exactamente igual que antes)
+# ==================================================================
+
 
 def _hay_validacion_sin_guardar():
     """True si hay una validación en curso (tienda activa en la sección 2) con
@@ -190,8 +550,6 @@ hay_validacion_sin_guardar = _hay_validacion_sin_guardar()
 # ------------------------------------------------------------------
 if "seccion_activa" not in st.session_state:
     st.session_state["seccion_activa"] = "2" if st.session_state.get("escaneo_activo") else "1"
-
-st.sidebar.title("Picking Subcedis")
 
 SECCIONES = [
     ("1", "1. Cargar pedido"),
