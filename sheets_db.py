@@ -51,7 +51,10 @@ PEDIDO_DETALLE_HEADERS = [
 RECEPCION_PEDIDO_HEADERS = ["documento", "fecha_carga", "nombre_archivo", "formato_detectado", "total_lineas"]
 RECEPCION_DETALLE_HEADERS = ["documento", "box_number", "codigo", "tipo_linea", "pool_id", "cantidad_esperada"]
 RECEPCION_POOLS_HEADERS = ["pool_id", "documento", "box_number", "codigos_miembros", "cantidad_total_esperada"]
-RECEPCION_SCANS_HEADERS = ["documento", "box_number", "pool_id", "codigo", "cantidad_recibida", "cantidad_devuelta", "hora"]
+RECEPCION_SCANS_HEADERS = [
+    "documento", "box_number", "pool_id", "codigo", "cantidad_recibida", "cantidad_devuelta",
+    "hora", "estado", "row",
+]
 RECEPCION_HISTORIAL_HEADERS = [
     "documento", "box_number", "fecha_cierre",
     "total_esperado", "total_recibido", "faltante_total", "excedente_total", "detalle_json",
@@ -666,7 +669,7 @@ def guardar_packing_list_recepcion(conn, resumen, detalle_df, pools_df):
 
     # recepcion_scans: limpia los escaneos de las cajas que trae este documento
     ws_scans = conn.worksheet("recepcion_scans")
-    scans_actual = _records_df(ws_scans, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4])
+    scans_actual = _records_df(ws_scans, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4, 8])
     if not scans_actual.empty:
         scans_actual = scans_actual[scans_actual["documento"].astype(str) != str(documento)]
         _write_df(ws_scans, scans_actual, RECEPCION_SCANS_HEADERS,
@@ -757,7 +760,7 @@ def get_pools_caja(conn, documento, box_number):
 def get_scans_caja(conn, documento, box_number):
     ws = conn.worksheet("recepcion_scans")
     # codigo(4) y pool_id(3): nunca numerizar, para no perder ceros a la izquierda.
-    df = _records_df(ws, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4])
+    df = _records_df(ws, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4, 8])
     if df.empty:
         return {}
     mask = (df["documento"].astype(str) == str(documento)) & (df["box_number"].astype(str) == str(box_number))
@@ -822,13 +825,13 @@ def register_scan_recepcion(conn, documento, box_number, codigo, detalle_map, po
 
     if row_number is not None:
         ws.update(
-            f"A{row_number}:G{row_number}",
-            [[documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now]],
+            f"A{row_number}:I{row_number}",
+            [[documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now, estado, ""]],
             value_input_option="RAW",
         )
     else:
         response = ws.append_row(
-            [documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now],
+            [documento, box_number, pool_id, codigo, nuevo_recibido, nuevo_devuelto, now, estado, ""],
             value_input_option="RAW",
         )
         try:
@@ -865,9 +868,10 @@ def deshacer_scan_recepcion(conn, documento, box_number, codigo, escaneado_delta
     recibido = max(recibido - escaneado_delta, 0)
     devuelto = max(devuelto - devuelto_delta, 0)
     now = _ahora().isoformat(timespec="seconds")
+    estado = "excedente" if devuelto > 0 else "ok"
     ws.update(
-        f"A{row_number}:G{row_number}",
-        [[documento, box_number, pool_id, codigo, recibido, devuelto, now]],
+        f"A{row_number}:I{row_number}",
+        [[documento, box_number, pool_id, codigo, recibido, devuelto, now, estado, ""]],
         value_input_option="RAW",
     )
     return {"recibido_total": recibido, "devuelto_total": devuelto}

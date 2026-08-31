@@ -202,7 +202,21 @@ if modulo_activo == "recepcion":
             "Sube el Excel del packing list (formato AP tipo 1 o tipo 2, se detecta "
             "automáticamente según el código)."
         )
-        uploaded_rec = st.file_uploader("Archivo Excel del packing list", type=["xlsx"], key="rec_uploader")
+
+        if st.session_state.get("rec_ultimo_guardado"):
+            st.success(f"Packing list del documento {st.session_state['rec_ultimo_guardado']} guardado.")
+            st.balloons()
+            st.session_state["rec_ultimo_guardado"] = None
+
+        # Truco para poder "limpiar" el file_uploader y el campo de documento
+        # después de guardar: cambiando la key (con un contador en sesión) el
+        # widget se vuelve a montar vacío, algo que Streamlit no permite hacer
+        # de otra forma sobre un widget ya instanciado.
+        if "rec_uploader_n" not in st.session_state:
+            st.session_state["rec_uploader_n"] = 0
+        uploader_key = f"rec_uploader_{st.session_state['rec_uploader_n']}"
+
+        uploaded_rec = st.file_uploader("Archivo Excel del packing list", type=["xlsx"], key=uploader_key)
 
         if uploaded_rec is not None:
             try:
@@ -219,9 +233,17 @@ if modulo_activo == "recepcion":
                 documento_final = st.text_input(
                     "Documento (código AP)",
                     value=documento_por_defecto,
-                    key="rec_documento_input",
+                    key=f"rec_documento_input_{st.session_state['rec_uploader_n']}",
                     help="Se toma por defecto del nombre del archivo. Puedes cambiarlo si quieres identificarlo distinto.",
                 ).strip()
+
+                # Aplicamos el documento elegido YA a las tablas que se
+                # muestran en pantalla, para que la vista previa coincida con
+                # lo que realmente se va a guardar.
+                detalle_df = detalle_df.copy()
+                detalle_df["documento"] = documento_final
+                pools_df = pools_df.copy()
+                pools_df["documento"] = documento_final
 
                 st.success(
                     f"Formato detectado: **{resumen['formato_detectado']}** — "
@@ -249,13 +271,13 @@ if modulo_activo == "recepcion":
                         st.error("El documento no puede quedar vacío.")
                     else:
                         resumen_final = dict(resumen, documento=documento_final)
-                        detalle_final = detalle_df.copy()
-                        detalle_final["documento"] = documento_final
-                        pools_final = pools_df.copy()
-                        pools_final["documento"] = documento_final
-                        db.guardar_packing_list_recepcion(conn, resumen_final, detalle_final, pools_final)
-                        st.success(f"Packing list del documento {documento_final} guardado.")
-                        st.balloons()
+                        db.guardar_packing_list_recepcion(conn, resumen_final, detalle_df, pools_df)
+                        # limpia el uploader y el campo de documento para la próxima carga;
+                        # el mensaje de éxito se muestra recién en el próximo run (arriba de
+                        # todo), porque un rerun inmediato no alcanza a mostrar este.
+                        st.session_state["rec_ultimo_guardado"] = documento_final
+                        st.session_state["rec_uploader_n"] += 1
+                        st.rerun()
 
     # -------------------- SECCIÓN 2: Validar por escaneo --------------------
     elif seccion_recepcion == "2":
