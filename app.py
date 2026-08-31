@@ -15,6 +15,7 @@ import streamlit as st
 import parser as pk
 import parser_recepcion as pr
 import report
+import report_recepcion
 
 TZ_PERU = ZoneInfo("America/Lima")
 
@@ -529,6 +530,41 @@ if modulo_activo == "recepcion":
             st.dataframe(hist_df, use_container_width=True)
         else:
             st.info("Aún no hay historial de recepciones. Cierra la validación de una caja en la sección 2.")
+
+        st.markdown("---")
+        st.markdown("#### Reporte descargable (por documento)")
+        st.caption(
+            "Genera un Excel con una hoja RESUMEN (comparación por código, sin importar la "
+            "caja, entre lo esperado según el packing list y lo escaneado físicamente) y una "
+            "hoja DETALLE con lo escaneado tal cual, código por código y caja por caja."
+        )
+
+        if documentos:
+            documento_reporte = st.selectbox("Documento para el reporte", documentos, key="rec_reporte_doc")
+            if st.button("Generar reporte", key="rec_generar_reporte"):
+                reporte_bytes, resumen_preview, _, stock_warning = report_recepcion.generar_reporte_recepcion(
+                    db, conn, documento_reporte
+                )
+                st.session_state["rec_reporte_bytes"] = reporte_bytes
+                st.session_state["rec_reporte_name"] = f"Reporte Recepcion {documento_reporte}.xlsx"
+                st.session_state["rec_reporte_preview"] = resumen_preview
+                if stock_warning:
+                    st.warning(f"⚠️ Descripciones de producto: {stock_warning}")
+
+            if "rec_reporte_preview" in st.session_state:
+                preview_display = st.session_state["rec_reporte_preview"].copy()
+                preview_display.index = range(1, len(preview_display) + 1)
+                st.dataframe(preview_display, use_container_width=True)
+
+            if "rec_reporte_bytes" in st.session_state:
+                st.download_button(
+                    "Descargar reporte Excel",
+                    data=st.session_state["rec_reporte_bytes"],
+                    file_name=st.session_state["rec_reporte_name"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+        else:
+            st.info("Primero carga un packing list en la sección 1 para poder generar un reporte.")
 
     st.stop()
 

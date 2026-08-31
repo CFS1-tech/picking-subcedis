@@ -714,6 +714,45 @@ def list_cajas_documento(conn, documento):
     return list(conteo.sort_values("box_number").itertuples(index=False, name=None))
 
 
+def get_detalle_documento_todas_cajas(conn, documento):
+    """Como get_detalle_caja, pero de TODAS las cajas del documento a la vez
+    (para el reporte)."""
+    df = _recepcion_detalle_cached(conn)
+    if df.empty:
+        return []
+    df = df[df["documento"].astype(str) == str(documento)]
+    resultado = []
+    for _, r in df.iterrows():
+        cantidad = r["cantidad_esperada"]
+        resultado.append({
+            "box_number": str(r["box_number"]),
+            "codigo": str(r["codigo"]),
+            "tipo_linea": r["tipo_linea"],
+            "pool_id": str(r["pool_id"]) if r["pool_id"] not in (None, "") else "",
+            "cantidad_esperada": float(cantidad) if cantidad not in (None, "") else 0,
+        })
+    return resultado
+
+
+def get_scans_documento_todas_cajas(conn, documento):
+    """Como get_scans_caja, pero de TODAS las cajas del documento a la vez
+    (para el reporte)."""
+    ws = conn.worksheet("recepcion_scans")
+    df = _records_df(ws, RECEPCION_SCANS_HEADERS, numericise_ignore=[1, 2, 3, 4, 8])
+    if df.empty:
+        return []
+    df = df[df["documento"].astype(str) == str(documento)]
+    resultado = []
+    for _, r in df.iterrows():
+        resultado.append({
+            "box_number": str(r["box_number"]),
+            "codigo": str(r["codigo"]),
+            "recibido": float(r["cantidad_recibida"] or 0),
+            "devuelto": float(r["cantidad_devuelta"] or 0),
+        })
+    return resultado
+
+
 def list_cajas_pendientes(conn, documento):
     todas = [c for c, _ in list_cajas_documento(conn, documento)]
     ws_hist = conn.worksheet("recepcion_historial")

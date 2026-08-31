@@ -488,6 +488,43 @@ def list_cajas_documento(conn, documento):
     return cur.fetchall()
 
 
+def get_detalle_documento_todas_cajas(conn, documento):
+    """Como get_detalle_caja, pero de TODAS las cajas del documento a la vez
+    (para el reporte). Devuelve una lista de dicts, uno por línea del
+    packing list consolidado (no un dict por código, porque el mismo código
+    puede repetirse en varias cajas)."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT box_number, codigo, tipo_linea, pool_id, cantidad_esperada FROM recepcion_detalle WHERE documento = ?",
+        (documento,),
+    )
+    return [
+        {
+            "box_number": box_number,
+            "codigo": codigo,
+            "tipo_linea": tipo_linea,
+            "pool_id": pool_id or "",
+            "cantidad_esperada": cantidad_esperada or 0,
+        }
+        for box_number, codigo, tipo_linea, pool_id, cantidad_esperada in cur.fetchall()
+    ]
+
+
+def get_scans_documento_todas_cajas(conn, documento):
+    """Como get_scans_caja, pero de TODAS las cajas del documento a la vez
+    (para el reporte). Devuelve una lista de dicts, uno por código
+    efectivamente escaneado en cada caja."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT box_number, codigo, cantidad_recibida, cantidad_devuelta FROM recepcion_scans WHERE documento = ?",
+        (documento,),
+    )
+    return [
+        {"box_number": box_number, "codigo": codigo, "recibido": recibido or 0, "devuelto": devuelto or 0}
+        for box_number, codigo, recibido, devuelto in cur.fetchall()
+    ]
+
+
 def list_cajas_pendientes(conn, documento):
     """Cajas de un documento que aún no tienen un cierre en recepcion_historial."""
     cur = conn.cursor()
