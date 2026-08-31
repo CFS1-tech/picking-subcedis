@@ -200,7 +200,7 @@ if modulo_activo == "recepcion":
         st.subheader("Cargar packing list de recepción")
         st.caption(
             "Sube el Excel del packing list (formato AP tipo 1 o tipo 2, se detecta "
-            "automáticamente según el código). Se identifica por el ORDER NUMBER (documento)."
+            "automáticamente según el código)."
         )
         uploaded_rec = st.file_uploader("Archivo Excel del packing list", type=["xlsx"], key="rec_uploader")
 
@@ -210,8 +210,21 @@ if modulo_activo == "recepcion":
             except Exception as e:
                 st.error(f"Error al leer el archivo: {e}")
             else:
+                # El "documento" con el que se identifica este packing list es
+                # editable: por defecto se toma el código AP del nombre del
+                # archivo (sin extensión), no el ORDER NUMBER interno del
+                # Excel, porque el código AP es el que usa Johanna para
+                # identificar cada packing list.
+                documento_por_defecto = uploaded_rec.name.rsplit(".", 1)[0]
+                documento_final = st.text_input(
+                    "Documento (código AP)",
+                    value=documento_por_defecto,
+                    key="rec_documento_input",
+                    help="Se toma por defecto del nombre del archivo. Puedes cambiarlo si quieres identificarlo distinto.",
+                ).strip()
+
                 st.success(
-                    f"Documento detectado: **{resumen['documento']}** — formato **{resumen['formato_detectado']}** — "
+                    f"Formato detectado: **{resumen['formato_detectado']}** — "
                     f"{resumen['total_lineas']} líneas ({len(pools_df)} caja(s) con códigos agrupados)."
                 )
                 with st.expander("Ver detalle consolidado", expanded=False):
@@ -225,16 +238,24 @@ if modulo_activo == "recepcion":
                         st.dataframe(pools_display, use_container_width=True)
 
                 documentos_existentes = [d for d, *_ in db.list_documentos_recepcion(conn)]
-                if resumen["documento"] in documentos_existentes:
+                if documento_final in documentos_existentes:
                     st.warning(
-                        f"Ya existe un packing list cargado para el documento {resumen['documento']}. "
+                        f"Ya existe un packing list cargado para el documento {documento_final}. "
                         "Si guardas de nuevo, se reemplazará y se reiniciarán los escaneos de sus cajas."
                     )
 
                 if st.button("Guardar packing list", type="primary"):
-                    db.guardar_packing_list_recepcion(conn, resumen, detalle_df, pools_df)
-                    st.success(f"Packing list del documento {resumen['documento']} guardado.")
-                    st.balloons()
+                    if not documento_final:
+                        st.error("El documento no puede quedar vacío.")
+                    else:
+                        resumen_final = dict(resumen, documento=documento_final)
+                        detalle_final = detalle_df.copy()
+                        detalle_final["documento"] = documento_final
+                        pools_final = pools_df.copy()
+                        pools_final["documento"] = documento_final
+                        db.guardar_packing_list_recepcion(conn, resumen_final, detalle_final, pools_final)
+                        st.success(f"Packing list del documento {documento_final} guardado.")
+                        st.balloons()
 
     # -------------------- SECCIÓN 2: Validar por escaneo --------------------
     elif seccion_recepcion == "2":
