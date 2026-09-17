@@ -116,8 +116,14 @@ def generar_reporte(db, conn, week_tag):
                 if not match.empty:
                     fila_base = match.iloc[0].to_dict()
 
-            cod = fila_base.get("cod", "") or ""
-            color = fila_base.get("color", "") or ""
+            # cod/color se recalculan aquí mismo a partir de 'codigo' (que
+            # siempre está correcto y completo, sin punto), en vez de leer
+            # las columnas 'cod'/'color' ya guardadas en pedido_detalle — así
+            # el reporte sale bien de inmediato sin tener que volver a
+            # cargar el pedido cada vez que se ajusta esta regla. Los
+            # primeros 6 caracteres son 'cod' y el resto es 'color' (ej.
+            # '146590056' -> '146590'/'056', '186360U' -> '186360'/'U').
+            cod, color = codigo[:6], codigo[6:]
             descripcion = descripciones.get(codigo, "")
 
             if tenido > 0:
