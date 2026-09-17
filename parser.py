@@ -43,14 +43,15 @@ def quitar_punto(codigo):
 
 def _partir_codigo(codigo_color):
     """Separa 'cod' y 'color' a partir de codigo_color (ej. '146590.056' -> ('146590','056')).
-    Si no hay punto, 'color' queda vacío."""
+    Si no hay punto (ej. '186360U'), 'cod' son los primeros 6 caracteres y
+    'color' es lo que sigue (ej. '186360U' -> ('186360','U'))."""
     if codigo_color is None:
         return "", ""
     texto = str(codigo_color).strip()
     if "." in texto:
         cod, color = texto.split(".", 1)
         return cod, color
-    return texto, ""
+    return texto[:6], texto[6:]
 
 
 def cargar_y_consolidar(xlsx_path_or_buffer):
