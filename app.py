@@ -889,7 +889,7 @@ elif seccion_activa == "2":
         tienda_sel = st.session_state["escaneo_tienda"]
         tienda_nombre = st.session_state["escaneo_tienda_nombre"]
 
-        header_col, salir_col = st.columns([4, 1.5], vertical_alignment="center")
+        header_col, reiniciar_col, salir_col = st.columns([3.5, 1.5, 1.5], vertical_alignment="center")
         with header_col:
             st.markdown(
                 f"""<div class="tienda-activa-header">
@@ -898,6 +898,10 @@ elif seccion_activa == "2":
                     </div>""",
                 unsafe_allow_html=True,
             )
+        with reiniciar_col:
+            if st.button("🗑 Reiniciar tienda", key="btn_reiniciar_activa"):
+                st.session_state["confirmar_reiniciar_tienda_activa"] = True
+                st.rerun()
         with salir_col:
             if st.button("⬅ Cambiar tienda"):
                 if hay_validacion_sin_guardar:
@@ -906,33 +910,27 @@ elif seccion_activa == "2":
                     st.session_state["escaneo_activo"] = False
                 st.rerun()
 
-        with st.expander("🗑 Reiniciar esta tienda (borra lo escaneado/guardado)"):
-            st.caption(
-                "Borra el historial (si ya la habías cerrado) y los escaneos guardados de "
-                f"**{tienda_nombre}** en la semana {week_sel}, para empezar de cero en esta "
-                "misma pantalla. No afecta a ninguna otra tienda."
+        if st.session_state.get("confirmar_reiniciar_tienda_activa"):
+            st.warning(
+                "⚠️ Esto borra PERMANENTEMENTE el historial (si ya la habías cerrado) y los "
+                f"escaneos guardados de **{tienda_nombre}** en la semana {week_sel}, para "
+                "empezar de cero. No afecta a ninguna otra tienda. ¿Confirmas?"
             )
-            if not st.session_state.get("confirmar_reiniciar_tienda_activa"):
-                if st.button("Borrar y reiniciar esta tienda", key="btn_reiniciar_activa"):
-                    st.session_state["confirmar_reiniciar_tienda_activa"] = True
+            cri1, cri2 = st.columns(2)
+            with cri1:
+                if st.button("Sí, borrar y reiniciar", type="primary", key="confirmar_reiniciar_si"):
+                    db.eliminar_validacion_tienda(conn, week_sel, tienda_sel)
+                    cache_key_reset = f"scans_cache_{week_sel}_{tienda_sel}"
+                    for key in list(st.session_state.keys()):
+                        if key == cache_key_reset or key == f"log_scans_{cache_key_reset}":
+                            del st.session_state[key]
+                    st.session_state["escaneo_guardado"] = False
+                    st.session_state["confirmar_reiniciar_tienda_activa"] = False
                     st.rerun()
-            else:
-                st.warning("⚠️ Esto es permanente. ¿Confirmas borrar todo lo guardado de esta tienda?")
-                cri1, cri2 = st.columns(2)
-                with cri1:
-                    if st.button("Sí, borrar y reiniciar", type="primary", key="confirmar_reiniciar_si"):
-                        db.eliminar_validacion_tienda(conn, week_sel, tienda_sel)
-                        cache_key_reset = f"scans_cache_{week_sel}_{tienda_sel}"
-                        for key in list(st.session_state.keys()):
-                            if key == cache_key_reset or key == f"log_scans_{cache_key_reset}":
-                                del st.session_state[key]
-                        st.session_state["escaneo_guardado"] = False
-                        st.session_state["confirmar_reiniciar_tienda_activa"] = False
-                        st.rerun()
-                with cri2:
-                    if st.button("Cancelar", key="confirmar_reiniciar_no"):
-                        st.session_state["confirmar_reiniciar_tienda_activa"] = False
-                        st.rerun()
+            with cri2:
+                if st.button("Cancelar", key="confirmar_reiniciar_no"):
+                    st.session_state["confirmar_reiniciar_tienda_activa"] = False
+                    st.rerun()
 
         if st.session_state.get("confirmar_salida"):
             st.warning(
