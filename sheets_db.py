@@ -504,6 +504,25 @@ def get_historial(conn, week_tag=None, tienda=None):
     return list(df[cols].itertuples(index=False, name=None))
 
 
+def eliminar_validacion_tienda(conn, week_tag, tienda):
+    """Borra el historial cerrado Y los escaneos en curso de una tienda en
+    una semana dada, para poder revalidarla desde cero. No toca el pedido
+    (lo solicitado) ni ninguna otra tienda/semana."""
+    ws_hist = conn.worksheet("historial")
+    hist_df = _records_df(ws_hist, HISTORIAL_HEADERS, numericise_ignore=[2])
+    if not hist_df.empty:
+        mask = (hist_df["week_tag"].astype(str) == str(week_tag)) & (hist_df["tienda"].astype(str) == str(tienda))
+        hist_df = hist_df[~mask]
+        _write_df(ws_hist, hist_df, HISTORIAL_HEADERS)
+
+    ws_scans = conn.worksheet("scans")
+    scans_df = _records_df(ws_scans, SCANS_HEADERS, numericise_ignore=[2, 3])
+    if not scans_df.empty:
+        mask = (scans_df["week_tag"].astype(str) == str(week_tag)) & (scans_df["tienda"].astype(str) == str(tienda))
+        scans_df = scans_df[~mask]
+        _write_df(ws_scans, scans_df, SCANS_HEADERS, columnas_texto=["tienda", "codigo"])
+
+
 def get_ultimo_detalle_validacion(conn, week_tag, tienda):
     """Devuelve el detalle por código (lista de dicts: codigo, solicitado,
     tenido, falta, devuelto) de la ÚLTIMA validación cerrada para esa
