@@ -371,6 +371,16 @@ def get_historial(conn, week_tag=None, tienda=None):
     return cur.fetchall()
 
 
+def eliminar_validacion_tienda(conn, week_tag, tienda):
+    """Borra el historial cerrado Y los escaneos en curso de una tienda en
+    una semana dada, para poder revalidarla desde cero. No toca el pedido
+    (lo solicitado) ni ninguna otra tienda/semana."""
+    cur = conn.cursor()
+    cur.execute("DELETE FROM historial WHERE week_tag = ? AND tienda = ?", (week_tag, tienda))
+    cur.execute("DELETE FROM scans WHERE week_tag = ? AND tienda = ?", (week_tag, tienda))
+    conn.commit()
+
+
 def get_ultimo_detalle_validacion(conn, week_tag, tienda):
     """Devuelve el detalle por código (lista de dicts: codigo, solicitado,
     tenido, falta, devuelto) de la ÚLTIMA validación cerrada para esa
