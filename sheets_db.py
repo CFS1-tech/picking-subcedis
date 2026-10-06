@@ -151,7 +151,30 @@ def _records_df(ws, headers, numericise_ignore=None):
     cualquier celda que "parezca" número (ej. '001' -> 1), incluso si en la
     hoja el texto se ve bien — por eso hay que excluir explícitamente las
     columnas de códigos/ids que pueden tener ceros a la izquierda."""
-    values = ws.get_all_records(expected_headers=headers, numericise_ignore=numericise_ignore or [])
+    ignore = numericise_ignore or []
+    try:
+        values = ws.get_all_records(expected_headers=headers, numericise_ignore=ignore)
+    except gspread.exceptions.GSpreadException:
+        # La fila de encabezados de la hoja no coincide exactamente con la
+        # esperada (columnas extra, renombradas, duplicadas o vacías). En vez
+        # de tumbar toda la app, leemos por POSICIÓN: se asume que la hoja
+        # tiene las columnas en el mismo orden que 'headers' y que la primera
+        # fila es el encabezado.
+        raw = ws.get_all_values()
+        filas = [r for r in raw[1:] if any(str(c).strip() for c in r)]
+        if not filas:
+            return pd.DataFrame(columns=headers)
+        n = len(headers)
+        filas = [(list(r) + [""] * n)[:n] for r in filas]
+        df = pd.DataFrame(filas, columns=headers)
+        for i, col in enumerate(headers, start=1):
+            if i in ignore:
+                continue
+            convertido = pd.to_numeric(df[col], errors="coerce")
+            # solo convertimos si TODA la columna (no vacía) es numérica
+            if convertido[df[col].astype(str).str.strip() != ""].notna().all():
+                df[col] = convertido.where(df[col].astype(str).str.strip() != "", df[col])
+        return df
     if not values:
         return pd.DataFrame(columns=headers)
     return pd.DataFrame(values)
